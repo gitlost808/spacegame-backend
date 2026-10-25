@@ -8,13 +8,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"spacegame-backend/internal/database"
+	"spacegame-backend/internal/game"
 	"spacegame-backend/internal/httpapi"
+	"spacegame-backend/internal/store"
 )
 
 func main() {
@@ -37,6 +40,10 @@ func main() {
 }
 
 func run(ctx context.Context, addr string, logger *slog.Logger) error {
+	policy, err := game.PolicyFromEnv()
+	if err != nil {
+		return err
+	}
 	connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	pool, err := database.Open(connectCtx, os.Getenv("DATABASE_URL"))
 	cancel()
@@ -44,10 +51,16 @@ func run(ctx context.Context, addr string, logger *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
+	service, err := game.NewService(store.New(pool), policy)
+	if err != nil {
+		return err
+	}
 
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           httpapi.NewHandler(logger, pool),
+		Addr: addr,
+		Handler: httpapi.NewHandler(logger, pool, httpapi.Config{
+			Game: service, AllowedOrigins: strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ","),
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

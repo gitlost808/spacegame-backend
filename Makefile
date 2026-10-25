@@ -1,7 +1,8 @@
-.PHONY: run build test test-integration vet fmt db-up db-down \
+.PHONY: run build test test-integration vet fmt generate db-up db-down \
 	migrate-create migrate-up migrate-down migrate-status migrate-version
 
 MIGRATIONS_DIR ?= migrations
+SQLC_IMAGE := sqlc/sqlc:1.31.1
 export MIGRATIONS_DIR NAME
 
 run:
@@ -22,6 +23,9 @@ vet:
 
 fmt:
 	gofmt -w cmd internal
+
+generate:
+	docker run --rm --user "$$(id -u):$$(id -g)" --volume "$(CURDIR):/src" --workdir /src $(SQLC_IMAGE) generate
 
 db-up:
 	docker compose up -d --wait db

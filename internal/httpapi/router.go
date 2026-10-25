@@ -17,10 +17,11 @@ type Pinger interface {
 }
 
 // NewHandler registers the HTTP API routes.
-func NewHandler(logger *slog.Logger, db Pinger) *gin.Engine {
+func NewHandler(logger *slog.Logger, db Pinger, config Config) *gin.Engine {
 	router := gin.New()
 	router.HandleMethodNotAllowed = true
 	_ = router.SetTrustedProxies(nil)
+	router.Use(cors(config.AllowedOrigins))
 	router.Use(gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered any) {
 		logger.Error("request panicked", "error", fmt.Sprint(recovered), "stack", string(debug.Stack()))
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -37,6 +38,15 @@ func NewHandler(logger *slog.Logger, db Pinger) *gin.Engine {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	api := router.Group("/api/v1")
+	api.Use(func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Next()
+	})
+	handler := gameHandler{service: config.Game, logger: logger}
+	api.POST("/sessions", handler.start)
+	api.POST("/sessions/:id/finish", handler.finish)
+	api.GET("/leaderboard", handler.leaderboard)
 	return router
 }
 

@@ -137,5 +137,5 @@ type pingFunc func(context.Context) error
 func (f pingFunc) Ping(ctx context.Context) error { return f(ctx) }
 
 func newHandler(db httpapi.Pinger) *gin.Engine {
-	return httpapi.NewHandler(slog.New(slog.NewJSONHandler(io.Discard, nil)), db)
+	return httpapi.NewHandler(slog.New(slog.NewJSONHandler(io.Discard, nil)), db, httpapi.Config{})
 }
