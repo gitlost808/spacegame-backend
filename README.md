@@ -24,9 +24,9 @@ The Go process reads configuration from environment variables; it does not load
 `.env` automatically. The commands above export the example settings into your
 shell. Docker Compose reads `.env` itself.
 
-The server requires `DATABASE_URL` and verifies the connection before accepting
-HTTP requests. To use an existing PostgreSQL database, set `DATABASE_URL` to its
-connection string and skip `make db-up`.
+The server requires `DATABASE_URL` or `DATABASE_URL_FILE` and verifies the
+connection before accepting HTTP requests. To use an existing PostgreSQL
+database, set `DATABASE_URL` to its connection string and skip `make db-up`.
 
 The server listens on `:8080` by default. Set `HTTP_ADDR` to change the address:
 
@@ -43,13 +43,18 @@ curl http://localhost:8080/readyz
 # {"status":"ok"}
 ```
 
-`/healthz` checks that the HTTP service is alive. `/readyz` checks PostgreSQL with
-a two-second timeout and returns HTTP 503 if it is unavailable.
+`/healthz` checks that the HTTP service is alive. `/readyz` checks PostgreSQL,
+all migrations bundled with this build, and required game columns with a
+two-second timeout. It returns HTTP 503 when any of those checks fail.
 
 Logs are JSON written to standard output. Gin uses release mode by default;
 set `GIN_MODE=debug` for its extra development output. On Ctrl+C or SIGTERM, the
 server allows up to 10 seconds for active requests to finish, then closes the
 database pool.
+
+Prometheus metrics use a separate listener, defaulting to `127.0.0.1:9090`.
+Set `METRICS_ADDR` for your private monitoring network. JSON request logs include
+a request ID, route template, status, and duration.
 
 The local database uses the development credentials in `compose.yaml` and binds
 to `127.0.0.1:5432`. `make db-down` stops it and preserves its named volume.
@@ -136,8 +141,8 @@ Validation uses these configurable starter defaults:
 Tune these limits to the game's scoring rules. The score must be non-negative
 and no greater than elapsed seconds multiplied by `MAX_SCORE_PER_SECOND`.
 Expired sessions return HTTP 410; implausible scores or durations return 422.
-Missing/wrong tokens return 401, unknown sessions 404, and malformed requests
-400. JSON request bodies are limited to 4 KiB. Tokens are generated with 256 bits
+Missing/wrong tokens return 401, unknown sessions 404, rate limits return 429
+with `Retry-After`, and malformed requests 400. JSON request bodies are limited to 4 KiB. Tokens are generated with 256 bits
 of randomness and stored only as hashes. These checks filter implausible
 submissions; they do not prove that a client actually played a game.
 
@@ -145,6 +150,16 @@ The example environment enables the frontend at `http://localhost:5173`.
 Set `CORS_ALLOWED_ORIGINS` to your game's exact origin when hosted separately;
 JSON and Authorization preflights are supported. Without configured origins,
 the browser frontend must use the same origin as the API.
+
+Per-client request limits default to starts 30/minute (burst 10), finishes
+120/minute (burst 20), and leaderboard reads 300/minute (burst 30). A global
+bucket allows 50 requests/second (burst 100) per instance. State is bounded at
+10,000 IPv4 addresses/IPv6 /64 prefixes. Tune the `RATE_LIMIT_*` settings in
+`.env.example` for your traffic.
+
+Expired unfinished sessions are deleted in batches every five minutes, after a
+default 24-hour retention period. Completed scores remain. Configure
+`CLEANUP_INTERVAL`, `EXPIRED_SESSION_RETENTION`, and `CLEANUP_BATCH_SIZE`.
 
 ## Docker
 
@@ -170,6 +185,19 @@ apply migrations on startup.
 
 To build an image directly, run `docker build -t spacegame-backend .`. When
 running it outside Compose, pass a `DATABASE_URL` reachable from the container.
+
+## Production
+
+This repository builds and publishes the application image. Production
+configuration and deployment live in the separate infrastructure repository,
+including ingress/TLS, secret mounts, rollout jobs, monitoring, and PostgreSQL
+backups and restore drills. `compose.yaml` is for local development.
+
+The [container contract](docs/container.md) documents commands, ports,
+environment variables, database privileges, health probes, and metrics for the
+infrastructure configuration. Set `APP_ENV=production` for both server and
+migration jobs; this requires verified PostgreSQL TLS. Both commands support
+`DATABASE_URL_FILE` for a mounted secret instead of `DATABASE_URL`.
 
 ## Published images
 
@@ -220,7 +248,10 @@ internal/httpapi/  Gin routes, handlers, middleware, and tests
 internal/database/ PostgreSQL connection pool and integration test
 internal/game/     Session lifecycle, score validation, and leaderboard service
 internal/store/    SQL queries and generated pgx access code
+internal/maintenance/ Bounded cleanup worker for expired unfinished sessions
+internal/observability/ Request metrics and structured logging
 migrations/        Versioned SQL schema changes and authoring instructions
+docs/container.md  Runtime contract for the separate infrastructure repository
 Dockerfile         Server and migration binaries in a non-root runtime image
 compose.yaml       Local app and PostgreSQL service with persistent storage
 ```

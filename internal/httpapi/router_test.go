@@ -134,8 +134,12 @@ func TestPanicRecovery(t *testing.T) {
 
 type pingFunc func(context.Context) error
 
-func (f pingFunc) Ping(ctx context.Context) error { return f(ctx) }
+func (f pingFunc) CheckReady(ctx context.Context) error { return f(ctx) }
 
-func newHandler(db httpapi.Pinger) *gin.Engine {
-	return httpapi.NewHandler(slog.New(slog.NewJSONHandler(io.Discard, nil)), db, httpapi.Config{})
+func newHandler(db httpapi.ReadinessChecker) *gin.Engine {
+	router, err := httpapi.NewHandler(slog.New(slog.NewJSONHandler(io.Discard, nil)), db, httpapi.Config{})
+	if err != nil {
+		panic(err)
+	}
+	return router
 }

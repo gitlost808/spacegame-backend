@@ -12,6 +12,7 @@ import (
 
 type Querier interface {
 	CreateSession(ctx context.Context, arg CreateSessionParams) (GameSession, error)
+	DeleteExpiredSessions(ctx context.Context, arg DeleteExpiredSessionsParams) (int64, error)
 	FinishSession(ctx context.Context, arg FinishSessionParams) (GameSession, error)
 	GetSession(ctx context.Context, id pgtype.UUID) (GameSession, error)
 	ListLeaderboard(ctx context.Context, limit int32) ([]ListLeaderboardRow, error)

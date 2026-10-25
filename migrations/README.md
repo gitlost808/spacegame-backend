@@ -27,6 +27,10 @@ database, add another migration for further changes instead of editing it.
 
 Run migrations once as a deployment step before starting the new application
 version. The HTTP server does not apply migrations on startup.
+The infrastructure repository owns this job. Use `migrate up` from the same
+image digest as the application rollout, with the schema owner's credentials.
+See the [container contract](../docs/container.md) for runtime credentials and
+readiness requirements.
 
 `00001_create_game_sessions.sql` creates the session/result table and leaderboard
 index. Completed sessions are leaderboard entries; unfinished sessions are

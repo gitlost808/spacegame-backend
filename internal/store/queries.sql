@@ -21,3 +21,15 @@ FROM game_sessions
 WHERE finished_at IS NOT NULL
 ORDER BY score DESC, finished_at ASC, id ASC
 LIMIT $1;
+
+-- name: DeleteExpiredSessions :execrows
+WITH expired AS (
+    SELECT candidate.id FROM game_sessions AS candidate
+    WHERE candidate.finished_at IS NULL AND candidate.expires_at < sqlc.arg(cutoff)
+    ORDER BY candidate.expires_at, candidate.id
+    LIMIT sqlc.arg(batch_size)
+    FOR UPDATE OF candidate SKIP LOCKED
+)
+DELETE FROM game_sessions
+USING expired
+WHERE game_sessions.id = expired.id AND game_sessions.finished_at IS NULL;

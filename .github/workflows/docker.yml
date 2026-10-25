@@ -60,6 +60,9 @@ jobs:
       - name: Run static checks
         run: make vet
 
+      - name: Validate local Compose configuration
+        run: docker compose config --quiet
+
   image:
     name: Build and publish image
     needs: tests

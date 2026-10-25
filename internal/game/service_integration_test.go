@@ -145,7 +145,7 @@ func TestPostgresGameSessions(t *testing.T) {
 			}
 		})
 	}
-	if err := goose.DownContext(ctx, sqlDB, "../../migrations"); err != nil {
+	if err := goose.DownToContext(ctx, sqlDB, "../../migrations", 0); err != nil {
 		t.Fatalf("rollback game schema: %v", err)
 	}
 	var exists bool

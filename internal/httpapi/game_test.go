@@ -35,9 +35,13 @@ func (s stubGame) Leaderboard(_ context.Context, limit int32) ([]game.Entry, err
 
 func gameRouter(service httpapi.GameService, origins ...string) *gin.Engine {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return httpapi.NewHandler(logger, pingFunc(func(context.Context) error { return nil }), httpapi.Config{
+	router, err := httpapi.NewHandler(logger, pingFunc(func(context.Context) error { return nil }), httpapi.Config{
 		Game: service, AllowedOrigins: origins,
 	})
+	if err != nil {
+		panic(err)
+	}
+	return router
 }
 
 func request(handler http.Handler, method, path, body, token string) *httptest.ResponseRecorder {

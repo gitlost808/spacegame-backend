@@ -6,6 +6,7 @@ RUN go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
+COPY migrations ./migrations
 RUN CGO_ENABLED=0 go test ./...
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/migrate ./cmd/migrate

@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"spacegame-backend/internal/game"
+	"spacegame-backend/internal/observability"
 )
 
 type GameService interface {
@@ -26,6 +27,9 @@ type GameService interface {
 type Config struct {
 	Game           GameService
 	AllowedOrigins []string
+	TrustedProxies []string
+	Limiter        *RateLimiter
+	Metrics        *observability.Metrics
 }
 
 type gameHandler struct {

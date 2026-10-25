@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,14 +12,22 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+
+	"spacegame-backend/internal/database"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, os.Args[1:], os.Getenv("DATABASE_URL")); err != nil {
+	databaseURL, err := database.URLFromEnv()
+	if err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+	if err := run(ctx, os.Args[1:], databaseURL); err != nil {
 		log.Print(err)
 		os.Exit(1)
 	}
@@ -60,10 +67,14 @@ func run(ctx context.Context, args []string, databaseURL string) error {
 		return errors.New("DATABASE_URL is required")
 	}
 
-	db, err := sql.Open("pgx", databaseURL)
+	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
 		return errors.New("invalid DATABASE_URL")
 	}
+	if err := database.ValidateTLS(&config.Config); err != nil {
+		return err
+	}
+	db := stdlib.OpenDB(*config)
 	defer db.Close()
 	connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	err = db.PingContext(connectCtx)

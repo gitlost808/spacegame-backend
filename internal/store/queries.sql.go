@@ -45,6 +45,32 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (G
 	return i, err
 }
 
+const deleteExpiredSessions = `-- name: DeleteExpiredSessions :execrows
+WITH expired AS (
+    SELECT candidate.id FROM game_sessions AS candidate
+    WHERE candidate.finished_at IS NULL AND candidate.expires_at < $1
+    ORDER BY candidate.expires_at, candidate.id
+    LIMIT $2
+    FOR UPDATE OF candidate SKIP LOCKED
+)
+DELETE FROM game_sessions
+USING expired
+WHERE game_sessions.id = expired.id AND game_sessions.finished_at IS NULL
+`
+
+type DeleteExpiredSessionsParams struct {
+	Cutoff    time.Time
+	BatchSize int32
+}
+
+func (q *Queries) DeleteExpiredSessions(ctx context.Context, arg DeleteExpiredSessionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredSessions, arg.Cutoff, arg.BatchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const finishSession = `-- name: FinishSession :one
 UPDATE game_sessions
 SET score = $1, finished_at = $2

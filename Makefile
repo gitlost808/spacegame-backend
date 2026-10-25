@@ -22,7 +22,7 @@ vet:
 	go vet ./...
 
 fmt:
-	gofmt -w cmd internal
+	gofmt -w cmd internal migrations
 
 generate:
 	docker run --rm --user "$$(id -u):$$(id -g)" --volume "$(CURDIR):/src" --workdir /src $(SQLC_IMAGE) generate
