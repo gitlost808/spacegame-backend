@@ -11,11 +11,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
+	"spacegame-backend/internal/database"
 	"spacegame-backend/internal/httpapi"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -31,9 +37,17 @@ func main() {
 }
 
 func run(ctx context.Context, addr string, logger *slog.Logger) error {
+	connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	pool, err := database.Open(connectCtx, os.Getenv("DATABASE_URL"))
+	cancel()
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewHandler(),
+		Handler:           httpapi.NewHandler(logger, pool),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
