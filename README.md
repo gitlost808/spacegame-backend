@@ -10,19 +10,15 @@ development also requires Docker Compose. Database migrations use
 
 ```sh
 cp .env.example .env
-make db-up
-
-set -a
-. ./.env
-set +a
-
-make migrate-up
-make run
+sh -ac '. ./.env && make db-up && make migrate-up && make run'
 ```
 
 The Go process reads configuration from environment variables; it does not load
-`.env` automatically. The commands above export the example settings into your
-shell. Docker Compose reads `.env` itself.
+`.env` automatically. The `sh -ac` command loads and exports `.env` in a POSIX
+shell, starts PostgreSQL, applies migrations, and runs the server. It works
+when launched from Bash, Zsh, or Fish without changing your current shell's
+environment. Docker must be running. If you already have a `.env`, keep it
+instead of copying over it, and edit its settings before starting the service.
 
 The server requires `DATABASE_URL` or `DATABASE_URL_FILE` and verifies the
 connection before accepting HTTP requests. To use an existing PostgreSQL
@@ -31,10 +27,14 @@ database, set `DATABASE_URL` to its connection string and skip `make db-up`.
 The server listens on `:8080` by default. Set `HTTP_ADDR` to change the address:
 
 ```sh
-HTTP_ADDR=127.0.0.1:9090 go run ./cmd/server
+sh -ac '. ./.env && HTTP_ADDR=127.0.0.1:8081 make run'
 ```
 
-Check liveness and database readiness:
+Use a different port from `METRICS_ADDR`, which defaults to
+`127.0.0.1:9090`.
+
+In another terminal, check liveness and database readiness (use port 8081 if
+you chose the alternate address above):
 
 ```sh
 curl http://localhost:8080/healthz
