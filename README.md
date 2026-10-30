@@ -114,6 +114,16 @@ curl -X POST http://localhost:8080/api/v1/sessions \
 The HTTP 201 response contains `session_id`, `session_token`, `player_name`,
 `started_at`, and `expires_at`. Keep the token for this run. Names are trimmed
 and must contain 1–32 Unicode characters without control characters.
+Names also pass local checks for English/German profanity and extremist
+references before a session is created. Rejected names return HTTP 400 with
+`{"error":"please choose another player name"}`.
+Matching ignores case, accents, common leetspeak substitutions, and separator
+or zero-width obfuscation; accepted names keep their original spelling and emoji.
+The [filter policy and word lists](internal/namefilter/README.md) include narrow
+exceptions for innocent names and can be adjusted when rebuilding the service.
+The policy blocks extremist slogans and coded combinations, including
+`ADOLF HILTER 88 HEIL`; ordinary names or `88` alone are not blocked.
+Existing leaderboard entries are not changed by the filter.
 
 When gameplay ends, replace `SESSION_ID` and `SESSION_TOKEN` with the values
 from the start response:
@@ -268,6 +278,7 @@ internal/config/   Typed server configuration and local dotenv loading
 internal/httpapi/  Gin routes, handlers, middleware, and tests
 internal/database/ PostgreSQL connection pool and integration test
 internal/game/     Session lifecycle, score validation, and leaderboard service
+internal/namefilter/ Local English/German player name filter and attributed word lists
 internal/store/    SQL queries and generated pgx access code
 internal/maintenance/ Bounded cleanup worker for expired unfinished sessions
 internal/observability/ Request metrics and structured logging

@@ -99,7 +99,7 @@ func (h gameHandler) leaderboard(c *gin.Context) {
 func (h gameHandler) writeError(c *gin.Context, err error) {
 	code := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, game.ErrInvalidName), errors.Is(err, game.ErrInvalidSessionID), errors.Is(err, game.ErrInvalidLimit):
+	case errors.Is(err, game.ErrInvalidName), errors.Is(err, game.ErrDisallowedName), errors.Is(err, game.ErrInvalidSessionID), errors.Is(err, game.ErrInvalidLimit):
 		code = http.StatusBadRequest
 	case errors.Is(err, game.ErrUnauthorized):
 		code = http.StatusUnauthorized

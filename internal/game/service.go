@@ -16,11 +16,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"spacegame-backend/internal/namefilter"
 	"spacegame-backend/internal/store"
 )
 
 var (
 	ErrInvalidName      = errors.New("player_name must contain 1 to 32 characters without control characters")
+	ErrDisallowedName   = errors.New("please choose another player name")
 	ErrInvalidSessionID = errors.New("session_id must be a UUID")
 	ErrUnauthorized     = errors.New("a valid session token is required")
 	ErrNotFound         = errors.New("session not found")
@@ -71,6 +73,9 @@ func (s *Service) Start(ctx context.Context, name string) (StartedSession, error
 	name = strings.TrimSpace(name)
 	if !utf8.ValidString(name) || utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 32 || strings.ContainsFunc(name, unicode.IsControl) {
 		return StartedSession{}, ErrInvalidName
+	}
+	if namefilter.Disallowed(name) {
+		return StartedSession{}, ErrDisallowedName
 	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {

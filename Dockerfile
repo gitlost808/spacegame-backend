@@ -22,6 +22,7 @@ COPY --from=build /out/server /out/migrate /usr/local/bin/
 COPY migrations ./migrations
 
 ENV HTTP_ADDR=:8080 GIN_MODE=release
+COPY internal/namefilter/words/LICENSE internal/namefilter/words/NOTICE /usr/share/licenses/spacegame-backend/namefilter/
 USER 10001:10001
 EXPOSE 8080
 STOPSIGNAL SIGTERM

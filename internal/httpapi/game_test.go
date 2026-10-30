@@ -129,6 +129,25 @@ func TestGameRequestValidation(t *testing.T) {
 	}
 }
 
+func TestDisallowedPlayerNameResponse(t *testing.T) {
+	// Rejected names must return before any database access through this nil store.
+	service, err := game.NewService(nil, game.DefaultPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := gameRouter(service)
+	for _, name := range []string{"xxFuckxx", "Scheiße", "sch3i$$3", "ADOLF HILTER 88 HEIL", "Adolf 88 Hilter", "Sieg Heil", "14/88"} {
+		body, err := json.Marshal(map[string]string{"player_name": name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := request(handler, http.MethodPost, "/api/v1/sessions", string(body), "")
+		if w.Code != http.StatusBadRequest || w.Body.String() != `{"error":"please choose another player name"}` {
+			t.Fatalf("name %q: response=%d %s", name, w.Code, w.Body)
+		}
+	}
+}
+
 func TestGameErrors(t *testing.T) {
 	tests := []struct {
 		err    error

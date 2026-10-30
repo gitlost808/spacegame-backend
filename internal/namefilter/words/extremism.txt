@@ -1,0 +1,38 @@
+# Local English/German rules for extremist references in public player names.
+# These policy additions are separate from the upstream profanity lists.
+# Do not put numeric-only codes here: leetspeak normalization changes digits.
+hitler
+adolf hilter
+adolph hilter
+heil hilter
+hilter heil
+hilter88
+88hilter
+sieg heil
+sieg hail
+neo nazi
+nazi pride
+nazi power
+nazi88
+nazi18
+nationalsozial
+national socialist
+white pride
+white supremacy
+white supremacist
+ku klux klan
+blood and honour
+blood and honor
+blood and soil
+blut und boden
+blut und ehre
+meine ehre heißt treue
+unsere ehre heißt treue
+deutschland erwache
+ein volk ein reich ein führer
+judenvergaser
+juden ver gasen
+judenhass
+jew killer
+kill all jews
+=nazi

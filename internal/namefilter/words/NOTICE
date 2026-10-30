@@ -1,0 +1,24 @@
+The English and German word lists are adapted from:
+  List of Dirty, Naughty, Obscene, and Otherwise Bad Words
+  LDNOOBW / Shutterstock and contributors
+  https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words
+  Upstream revision: 5faf2ba42d7b1c0977169ec3611df25a3c08eb13
+
+Upstream data is licensed under Creative Commons Attribution 4.0 International:
+  https://creativecommons.org/licenses/by/4.0/
+  The complete license is provided in LICENSE alongside this notice.
+
+Changes in this project:
+  Selected a subset of the English and German lists for player names;
+  omitted neutral, medical, and identity terms;
+  added the compound "cocksucker" and the German stem "scheiß";
+  classified ambiguous terms for whole-token matching;
+  added local false-positive exceptions in allow.txt.
+
+The license applies to the adapted word-list data. It does not change the
+license of the application's Go code.
+
+extremism.txt contains locally authored display-name policy rules, separate
+from the adapted upstream profanity lists. Their reference sources and numeric
+matching policy are documented in internal/namefilter/README.md in the source
+repository.

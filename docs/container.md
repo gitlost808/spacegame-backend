@@ -144,6 +144,15 @@ Duration settings use Go syntax such as `5m` or `24h`. Rates and bursts are
 positive integers. Tune score validation to actual gameplay before launch;
 elapsed-time checks alone cannot establish that a client played a game.
 
+New player names are checked against local English/German profanity lists and
+rules for extremist references embedded in the image. Rejected names return 400
+before creating a session; accepted display names keep their original spelling.
+There are no moderation
+service credentials or extra runtime files. Change the lists in
+`internal/namefilter/words/` and rebuild to update policy. The image includes
+word-list attribution and licensing at
+`/usr/share/licenses/spacegame-backend/namefilter/`.
+
 Client limits group each IPv4 address or IPv6 /64. HTTP 429 includes
 `Retry-After`. State is bounded, held in memory, reset on restart, and local to
 each instance. Configure a shared budget at ingress when running replicas.

@@ -84,6 +84,33 @@ func TestInvalidPlayerNames(t *testing.T) {
 	}
 }
 
+func TestDisallowedPlayerNamesAreNotSaved(t *testing.T) {
+	service, _ := NewService(stubStore{create: func(store.CreateSessionParams) (store.GameSession, error) {
+		t.Fatal("a rejected name must not create a database row")
+		return store.GameSession{}, nil
+	}}, DefaultPolicy())
+	for _, name := range []string{"  xxFuckxx  ", "Scheiße", "f\u200buck", "sch3i$$3", "ADOLF HILTER 88 HEIL", "S13g H31l", "14/88"} {
+		if _, err := service.Start(context.Background(), name); !errors.Is(err, ErrDisallowedName) {
+			t.Errorf("name %q: error=%v, want a disallowed name", name, err)
+		}
+	}
+}
+
+func TestAcceptedNamesKeepOriginalSpelling(t *testing.T) {
+	service, _ := NewService(stubStore{create: func(p store.CreateSessionParams) (store.GameSession, error) {
+		if p.PlayerName != "Müller 🚀" {
+			t.Fatalf("comparison normalization must not change the stored name: %q", p.PlayerName)
+		}
+		session := fixture()
+		session.PlayerName = p.PlayerName
+		return session, nil
+	}}, DefaultPolicy())
+	started, err := service.Start(context.Background(), "  Müller 🚀  ")
+	if err != nil || started.PlayerName != "Müller 🚀" {
+		t.Fatalf("display name=%q error=%v", started.PlayerName, err)
+	}
+}
+
 func TestFinishValidation(t *testing.T) {
 	tests := []struct {
 		name    string

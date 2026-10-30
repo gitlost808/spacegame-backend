@@ -1,0 +1,30 @@
+# Reviewed German terms derived from LDNOOBW; see NOTICE and LICENSE.
+# Neutral words and identity labels from upstream are deliberately excluded.
+arschficker
+arschlecker
+arschloch
+bumsen
+fick
+fotze
+hackfresse
+hurensohn
+kackbratze
+kackwurst
+kanake
+neger
+nutte
+pimmel
+pisser
+schabracke
+schlampe
+scheiß
+schwanzlutscher
+schwuchtel
+titten
+vollpfosten
+wichse
+wichser
+=arsch
+=hure
+=kacke
+=muschi
