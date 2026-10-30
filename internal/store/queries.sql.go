@@ -71,6 +71,26 @@ func (q *Queries) DeleteExpiredSessions(ctx context.Context, arg DeleteExpiredSe
 	return result.RowsAffected(), nil
 }
 
+const deleteUnfinishedSession = `-- name: DeleteUnfinishedSession :execrows
+DELETE FROM game_sessions
+WHERE id = $1
+  AND token_hash = $2
+  AND finished_at IS NULL
+`
+
+type DeleteUnfinishedSessionParams struct {
+	ID        pgtype.UUID
+	TokenHash []byte
+}
+
+func (q *Queries) DeleteUnfinishedSession(ctx context.Context, arg DeleteUnfinishedSessionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUnfinishedSession, arg.ID, arg.TokenHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const finishSession = `-- name: FinishSession :one
 UPDATE game_sessions
 SET score = $1, finished_at = $2

@@ -6,6 +6,12 @@ RETURNING *;
 -- name: GetSession :one
 SELECT * FROM game_sessions WHERE id = $1;
 
+-- name: DeleteUnfinishedSession :execrows
+DELETE FROM game_sessions
+WHERE id = sqlc.arg(id)
+  AND token_hash = sqlc.arg(token_hash)
+  AND finished_at IS NULL;
+
 -- name: FinishSession :one
 UPDATE game_sessions
 SET score = sqlc.arg(score), finished_at = sqlc.arg(finished_at)

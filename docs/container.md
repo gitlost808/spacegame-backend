@@ -151,8 +151,10 @@ each instance. Configure a shared budget at ingress when running replicas.
 Each server runs cleanup immediately and every configured interval. It deletes
 unfinished sessions after their expiry plus the retention period and preserves
 completed scores. A sweep processes at most ten batches within 30 seconds and
-skips locked rows, allowing multiple replicas to clean up concurrently. Expired
-sessions return 410 while retained and 404 after deletion.
+skips locked rows, allowing multiple replicas to clean up concurrently. An
+authenticated finish rejected for an invalid score, too-short duration, or
+expiry immediately deletes the unfinished session; later attempts return 404.
+Wrong tokens cannot delete sessions, and completed scores are preserved.
 
 ## Observability
 

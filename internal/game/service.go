@@ -112,14 +112,14 @@ func (s *Service) Finish(ctx context.Context, id, token string, score int64) (Re
 	}
 	finishedAt := s.now().UTC().Truncate(time.Microsecond)
 	if finishedAt.After(session.ExpiresAt) {
-		return Result{}, ErrExpired
+		return s.rejectFinish(ctx, sessionID, hash[:], score, ErrExpired)
 	}
 	elapsed := finishedAt.Sub(session.StartedAt)
 	if elapsed < s.policy.MinDuration {
-		return Result{}, ErrTooShort
+		return s.rejectFinish(ctx, sessionID, hash[:], score, ErrTooShort)
 	}
 	if score < 0 || float64(score) > float64(s.policy.MaxScorePerSecond)*elapsed.Seconds() {
-		return Result{}, ErrInvalidScore
+		return s.rejectFinish(ctx, sessionID, hash[:], score, ErrInvalidScore)
 	}
 	session, err = s.queries.FinishSession(ctx, store.FinishSessionParams{
 		ID: sessionID, TokenHash: hash[:],
@@ -138,6 +138,24 @@ func (s *Service) Finish(ctx context.Context, id, token string, score int64) (Re
 		return Result{}, fmt.Errorf("finish session: %w", err)
 	}
 	return result(session), nil
+}
+
+func (s *Service) rejectFinish(ctx context.Context, id pgtype.UUID, tokenHash []byte, score int64, reason error) (Result, error) {
+	deleted, err := s.queries.DeleteUnfinishedSession(ctx, store.DeleteUnfinishedSessionParams{
+		ID: id, TokenHash: tokenHash,
+	})
+	if err != nil {
+		return Result{}, fmt.Errorf("delete rejected session: %w", err)
+	}
+	if deleted > 0 {
+		return Result{}, reason
+	}
+	// A concurrent finish may have completed the run, or another rejection deleted it.
+	session, err := s.queries.GetSession(ctx, id)
+	if err != nil {
+		return Result{}, sessionError(err)
+	}
+	return existingResult(session, score)
 }
 
 func (s *Service) Leaderboard(ctx context.Context, limit int32) ([]Entry, error) {

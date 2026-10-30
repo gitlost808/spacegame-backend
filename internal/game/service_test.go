@@ -19,6 +19,7 @@ type stubStore struct {
 	create func(store.CreateSessionParams) (store.GameSession, error)
 	get    func() (store.GameSession, error)
 	finish func(store.FinishSessionParams) (store.GameSession, error)
+	delete func(store.DeleteUnfinishedSessionParams) (int64, error)
 	list   func(int32) ([]store.ListLeaderboardRow, error)
 }
 
@@ -30,6 +31,9 @@ func (s stubStore) GetSession(context.Context, pgtype.UUID) (store.GameSession, 
 }
 func (s stubStore) FinishSession(_ context.Context, p store.FinishSessionParams) (store.GameSession, error) {
 	return s.finish(p)
+}
+func (s stubStore) DeleteUnfinishedSession(_ context.Context, p store.DeleteUnfinishedSessionParams) (int64, error) {
+	return s.delete(p)
 }
 func (s stubStore) ListLeaderboard(_ context.Context, limit int32) ([]store.ListLeaderboardRow, error) {
 	return s.list(limit)
@@ -104,8 +108,21 @@ func TestFinishValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			session := fixture()
 			writes := 0
+			deleted := false
 			db := stubStore{
-				get: func() (store.GameSession, error) { return session, nil },
+				get: func() (store.GameSession, error) {
+					if deleted {
+						return store.GameSession{}, pgx.ErrNoRows
+					}
+					return session, nil
+				},
+				delete: func(p store.DeleteUnfinishedSessionParams) (int64, error) {
+					if p.ID != session.ID || string(p.TokenHash) != string(session.TokenHash) {
+						t.Fatal("rejection must target only the authenticated session")
+					}
+					deleted = true
+					return 1, nil
+				},
 				finish: func(p store.FinishSessionParams) (store.GameSession, error) {
 					writes++
 					session.Score, session.FinishedAt = p.Score, p.FinishedAt
@@ -124,7 +141,48 @@ func TestFinishValidation(t *testing.T) {
 			if tt.want == nil && (writes != 1 || result.Score != tt.score || result.DurationMS != tt.elapsed.Milliseconds()) {
 				t.Fatalf("unexpected result %+v, writes = %d", result, writes)
 			}
+			wantDeletion := errors.Is(tt.want, ErrInvalidScore) || errors.Is(tt.want, ErrTooShort) || errors.Is(tt.want, ErrExpired)
+			if deleted != wantDeletion {
+				t.Fatalf("deleted=%t, want %t", deleted, wantDeletion)
+			}
+			if deleted {
+				if _, err := service.Finish(context.Background(), session.ID.String(), "test-token", 0); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("a rejected session must not be retryable: %v", err)
+				}
+			}
 		})
+	}
+}
+
+func TestRejectedFinishDeletionFailure(t *testing.T) {
+	session := fixture()
+	want := errors.New("database unavailable")
+	service, _ := NewService(stubStore{
+		get:    func() (store.GameSession, error) { return session, nil },
+		delete: func(store.DeleteUnfinishedSessionParams) (int64, error) { return 0, want },
+	}, DefaultPolicy())
+	service.now = func() time.Time { return session.StartedAt.Add(time.Second) }
+	if _, err := service.Finish(context.Background(), session.ID.String(), "test-token", -1); !errors.Is(err, want) {
+		t.Fatalf("failed deletion must report the database error: %v", err)
+	}
+}
+
+func TestRejectedFinishLostRace(t *testing.T) {
+	for _, winner := range []int64{0, 100} {
+		session := fixture()
+		service, _ := NewService(stubStore{
+			get: func() (store.GameSession, error) { return session, nil },
+			delete: func(store.DeleteUnfinishedSessionParams) (int64, error) {
+				session.FinishedAt = pgtype.Timestamptz{Time: session.StartedAt.Add(time.Second), Valid: true}
+				session.Score = pgtype.Int8{Int64: winner, Valid: true}
+				return 0, nil
+			},
+		}, DefaultPolicy())
+		service.now = func() time.Time { return session.StartedAt.Add(500 * time.Millisecond) }
+		result, err := service.Finish(context.Background(), session.ID.String(), "test-token", 0)
+		if winner == 0 && (err != nil || result.Score != 0) || winner != 0 && !errors.Is(err, ErrAlreadyFinished) {
+			t.Fatalf("a completed run must survive concurrent rejection: result=%+v error=%v", result, err)
+		}
 	}
 }
 

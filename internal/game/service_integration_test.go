@@ -4,6 +4,7 @@ package game
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -18,6 +20,41 @@ import (
 	"spacegame-backend/internal/database"
 	"spacegame-backend/internal/store"
 )
+
+type gatedFinishStore struct {
+	store.Querier
+	pauseFinish bool
+	entered     chan struct{}
+	resume      chan struct{}
+}
+
+func (s gatedFinishStore) wait(ctx context.Context) error {
+	close(s.entered)
+	select {
+	case <-s.resume:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s gatedFinishStore) FinishSession(ctx context.Context, p store.FinishSessionParams) (store.GameSession, error) {
+	if s.pauseFinish {
+		if err := s.wait(ctx); err != nil {
+			return store.GameSession{}, err
+		}
+	}
+	return s.Querier.FinishSession(ctx, p)
+}
+
+func (s gatedFinishStore) DeleteUnfinishedSession(ctx context.Context, p store.DeleteUnfinishedSessionParams) (int64, error) {
+	if !s.pauseFinish {
+		if err := s.wait(ctx); err != nil {
+			return 0, err
+		}
+	}
+	return s.Querier.DeleteUnfinishedSession(ctx, p)
+}
 
 func TestPostgresGameSessions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -142,6 +179,115 @@ func TestPostgresGameSessions(t *testing.T) {
 			}
 			if sameScore && (successes != 2 || results[0] != results[1]) || !sameScore && (successes != 1 || conflicts != 1) {
 				t.Fatalf("concurrent finish: successes = %d, conflicts = %d, results = %+v", successes, conflicts, results)
+			}
+		})
+	}
+	for _, tt := range []struct {
+		name    string
+		elapsed time.Duration
+		score   int64
+		want    error
+	}{
+		{"excessive score", 2 * time.Second, 2001, ErrInvalidScore},
+		{"negative score", 2 * time.Second, -1, ErrInvalidScore},
+		{"too short", 500 * time.Millisecond, 0, ErrTooShort},
+		{"expired", time.Hour + time.Second, 0, ErrExpired},
+	} {
+		t.Run("invalid_finish_deletes_"+tt.name, func(t *testing.T) {
+			now = start
+			run, err := service.Start(ctx, "Rejected")
+			if err != nil {
+				t.Fatal(err)
+			}
+			now = start.Add(tt.elapsed)
+			if _, err := service.Finish(ctx, run.SessionID, run.SessionToken, tt.score); !errors.Is(err, tt.want) {
+				t.Fatalf("invalid finish: %v, want %v", err, tt.want)
+			}
+			if _, err := restarted.Finish(ctx, run.SessionID, run.SessionToken, 0); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("a corrected retry through another instance must fail: %v", err)
+			}
+		})
+	}
+	t.Run("deletion_requires_matching_token_and_unfinished_run", func(t *testing.T) {
+		now = start
+		run, err := service.Start(ctx, "Protected")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var id pgtype.UUID
+		if err := id.Scan(run.SessionID); err != nil {
+			t.Fatal(err)
+		}
+		badHash := sha256.Sum256([]byte("wrong-token"))
+		if deleted, err := queries.DeleteUnfinishedSession(ctx, store.DeleteUnfinishedSessionParams{ID: id, TokenHash: badHash[:]}); err != nil || deleted != 0 {
+			t.Fatalf("a wrong hash must not delete the session: deleted=%d error=%v", deleted, err)
+		}
+		now = start.Add(2 * time.Second)
+		if _, err := service.Finish(ctx, run.SessionID, "wrong-token", -1); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("wrong token must be rejected before score validation: %v", err)
+		}
+		completed, err := service.Finish(ctx, run.SessionID, run.SessionToken, 100)
+		if err != nil {
+			t.Fatalf("an unauthorized request must leave the session usable: %v", err)
+		}
+		hash := sha256.Sum256([]byte(run.SessionToken))
+		if deleted, err := queries.DeleteUnfinishedSession(ctx, store.DeleteUnfinishedSessionParams{ID: id, TokenHash: hash[:]}); err != nil || deleted != 0 {
+			t.Fatalf("a completed result must never be deleted by rejection: deleted=%d error=%v", deleted, err)
+		}
+		if _, err := service.Finish(ctx, run.SessionID, run.SessionToken, 101); !errors.Is(err, ErrAlreadyFinished) {
+			t.Fatalf("different-score retries must preserve the original result: %v", err)
+		}
+		if retry, err := service.Finish(ctx, run.SessionID, run.SessionToken, 100); err != nil || retry != completed {
+			t.Fatalf("same-score retries must remain idempotent: result=%+v error=%v", retry, err)
+		}
+	})
+	for _, rejectionWins := range []bool{true, false} {
+		t.Run(fmt.Sprintf("concurrent_rejection_wins_%t", rejectionWins), func(t *testing.T) {
+			now = start
+			run, err := service.Start(ctx, "Racing")
+			if err != nil {
+				t.Fatal(err)
+			}
+			now = start.Add(2 * time.Second)
+			gate := gatedFinishStore{Querier: queries, pauseFinish: rejectionWins, entered: make(chan struct{}), resume: make(chan struct{})}
+			var once sync.Once
+			resume := func() { once.Do(func() { close(gate.resume) }) }
+			defer resume()
+			paused, _ := NewService(gate, DefaultPolicy())
+			paused.now = func() time.Time { return now }
+			pausedScore, firstScore := int64(2001), int64(100)
+			if rejectionWins {
+				pausedScore, firstScore = firstScore, pausedScore
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := paused.Finish(ctx, run.SessionID, run.SessionToken, pausedScore)
+				done <- err
+			}()
+			select {
+			case <-gate.entered:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			_, firstErr := service.Finish(ctx, run.SessionID, run.SessionToken, firstScore)
+			resume()
+			var pausedErr error
+			select {
+			case pausedErr = <-done:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if rejectionWins {
+				if !errors.Is(firstErr, ErrInvalidScore) || !errors.Is(pausedErr, ErrNotFound) {
+					t.Fatalf("a winning rejection must prevent the pending finish: first=%v pending=%v", firstErr, pausedErr)
+				}
+			} else {
+				if firstErr != nil || !errors.Is(pausedErr, ErrAlreadyFinished) {
+					t.Fatalf("a winning completion must survive rejection: first=%v pending=%v", firstErr, pausedErr)
+				}
+				if retry, err := service.Finish(ctx, run.SessionID, run.SessionToken, 100); err != nil || retry.Score != 100 {
+					t.Fatalf("completed score must remain accessible: result=%+v error=%v", retry, err)
+				}
 			}
 		})
 	}

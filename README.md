@@ -150,6 +150,12 @@ Validation uses these configurable starter defaults:
 Tune these limits to the game's scoring rules. The score must be non-negative
 and no greater than elapsed seconds multiplied by `MAX_SCORE_PER_SECOND`.
 Expired sessions return HTTP 410; implausible scores or durations return 422.
+An authenticated finish with a negative/excessive score, too-short duration,
+or expired session deletes the unfinished session before returning that error.
+Further attempts return 404, even if the score is corrected. Missing or wrong
+tokens do not delete sessions. Completed results remain protected, including
+when a valid finish races with an invalid attempt. Malformed HTTP/JSON requests
+are rejected without consuming the session.
 Missing/wrong tokens return 401, unknown sessions 404, rate limits return 429
 with `Retry-After`, and malformed requests 400. JSON request bodies are limited to 4 KiB. Tokens are generated with 256 bits
 of randomness and stored only as hashes. These checks filter implausible
