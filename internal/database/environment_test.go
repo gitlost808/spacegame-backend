@@ -1,7 +1,6 @@
 package database_test
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,22 +41,30 @@ func TestDatabaseSecretFile(t *testing.T) {
 	}
 }
 
-func TestProductionRequiresVerifiedTLS(t *testing.T) {
+func TestProductionRequiresExplicitSSLMode(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
-	for _, mode := range []string{"disable", "prefer", "require", "verify-ca"} {
-		pool, err := database.Open(context.Background(), "postgres://pilot:password@localhost/game?sslmode="+mode)
-		if pool != nil {
-			pool.Close()
+	for _, mode := range []string{"disable", "allow", "prefer", "require", "verify-ca", "verify-full"} {
+		connectionURL := "postgres://pilot:password@localhost/game?sslmode=" + mode
+		if _, err := pgx.ParseConfig(connectionURL); err != nil {
+			t.Fatalf("sslmode=%s must be accepted by pgx: %v", mode, err)
 		}
-		if err == nil || !strings.Contains(err.Error(), "TLS") {
-			t.Fatalf("sslmode=%s must be rejected before connecting: %v", mode, err)
+		if err := database.ValidateSSLMode(connectionURL); err != nil {
+			t.Fatalf("explicit sslmode=%s must be accepted in production: %v", mode, err)
 		}
 	}
-	config, err := pgx.ParseConfig("postgres://pilot:password@localhost/game?sslmode=verify-full")
-	if err != nil {
-		t.Fatal(err)
+	for _, connectionURL := range []string{
+		"postgres://pilot:private-password@localhost/game",
+		"postgres://pilot:private-password@localhost/game?sslmode=",
+		"postgres://pilot:private-password@localhost/game?application_name=sslmode%3Ddisable",
+		"postgres://pilot:private-password@localhost/game?sslmode=disable&sslmode=",
+		"postgres://pilot:private-password@localhost/game?sslmode=&sslmode=disable",
+	} {
+		if err := database.ValidateSSLMode(connectionURL); err == nil || !strings.Contains(err.Error(), "sslmode") || strings.Contains(err.Error(), "private-password") {
+			t.Fatalf("missing explicit sslmode must fail without exposing credentials: %v", err)
+		}
 	}
-	if err := database.ValidateTLS(&config.Config); err != nil {
-		t.Fatalf("verified TLS should be accepted: %v", err)
+	t.Setenv("APP_ENV", "development")
+	if err := database.ValidateSSLMode("postgres://pilot:password@localhost/game"); err != nil {
+		t.Fatalf("development should retain pgx defaults: %v", err)
 	}
 }

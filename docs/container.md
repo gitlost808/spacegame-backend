@@ -40,7 +40,7 @@ variables always take precedence over local defaults.
 
 | Variable | Default | Infrastructure setting |
 | --- | --- | --- |
-| `APP_ENV` | unset | `production` enforces verified PostgreSQL TLS |
+| `APP_ENV` | unset | `production` skips local `.env` loading and requires an explicit database `sslmode` |
 | `DATABASE_URL` | required unless a file is configured | PostgreSQL connection URI; keep it in a secret |
 | `DATABASE_URL_FILE` | unset | Alternative path to a mounted UTF-8 connection URI, at most 16 KiB |
 | `HTTP_ADDR` | `:8080` | API bind address |
@@ -53,7 +53,10 @@ Set only one of `DATABASE_URL` and `DATABASE_URL_FILE`. Mounted secrets and
 CA certificates must be readable by UID 10001. Secret values are loaded when
 the process starts; restart the process after rotating them.
 
-Production connections must verify the certificate and hostname, for example:
+Production connections must specify `sslmode` explicitly in the PostgreSQL URI,
+including URIs loaded through `DATABASE_URL_FILE`. The server and migration job
+honor the selected pgx mode. For remote or managed databases, use certificate
+and hostname verification:
 
 ```text
 postgres://USER:PASSWORD@DB_HOST:5432/DATABASE?sslmode=verify-full
@@ -61,7 +64,15 @@ postgres://USER:PASSWORD@DB_HOST:5432/DATABASE?sslmode=verify-full
 
 Percent-encode special URI characters in credentials. For a private CA, mount
 the certificate and append `&sslrootcert=/path/in/container/ca.crt`. The image
-includes the system CA bundle. TLS verification applies to both commands.
+includes the system CA bundle. Both commands use the selected SSL mode.
+
+For a trusted, isolated database on the same Docker host, infrastructure can
+explicitly select `sslmode=disable` while keeping `APP_ENV=production`. This
+leaves database traffic unencrypted; keep the database port private. The
+`require` mode encrypts traffic without hostname verification. Avoid `prefer`
+and `allow` in production because they permit plaintext fallback. An omitted,
+empty, or repeated URI `sslmode` is rejected in production to keep the choice
+unambiguous and avoid pgx's default.
 
 Only trust ingress addresses that can actually reach the service. The ingress
 must sanitize forwarding headers supplied by clients. With no trusted proxies,

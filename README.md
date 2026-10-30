@@ -208,8 +208,10 @@ backups and restore drills. `compose.yaml` is for local development.
 The [container contract](docs/container.md) documents commands, ports,
 environment variables, database privileges, health probes, and metrics for the
 infrastructure configuration. Set `APP_ENV=production` for both server and
-migration jobs; this requires verified PostgreSQL TLS. Both commands support
-`DATABASE_URL_FILE` for a mounted secret instead of `DATABASE_URL`.
+migration jobs and select an explicit `sslmode` in the PostgreSQL connection
+URI. Use `sslmode=verify-full` for remote databases; `sslmode=disable` is an
+explicit option for a trusted, isolated database on the same host. Both commands
+support `DATABASE_URL_FILE` for a mounted secret instead of `DATABASE_URL`.
 
 ## Published images
 

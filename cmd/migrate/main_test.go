@@ -50,3 +50,11 @@ func TestInvalidArgumentsAndConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestProductionMigrationRequiresExplicitSSLMode(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	err := run(context.Background(), []string{"version"}, "postgres://pilot:password@localhost/game")
+	if err == nil || !strings.Contains(err.Error(), "sslmode") {
+		t.Fatalf("must reject an implicit SSL mode before connecting: %v", err)
+	}
+}

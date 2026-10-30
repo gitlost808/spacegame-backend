@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -22,7 +22,7 @@ func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, errors.New("invalid DATABASE_URL")
 	}
-	if err := ValidateTLS(&config.ConnConfig.Config); err != nil {
+	if err := ValidateSSLMode(databaseURL); err != nil {
 		return nil, err
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
@@ -36,18 +36,19 @@ func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// ValidateTLS requires verified TLS for production server and migration clients.
-func ValidateTLS(config *pgconn.Config) error {
+// ValidateSSLMode requires production URLs to make the transport policy explicit.
+// pgx validates the selected mode and configures TLS for server and migration clients.
+func ValidateSSLMode(databaseURL string) error {
 	if os.Getenv("APP_ENV") != "production" {
 		return nil
 	}
-	if config.TLSConfig == nil || config.TLSConfig.InsecureSkipVerify || config.TLSConfig.ServerName == "" {
-		return errors.New("production requires PostgreSQL TLS certificate and hostname verification; use sslmode=verify-full")
+	connectionURL, err := url.Parse(databaseURL)
+	if err != nil {
+		return errors.New("invalid DATABASE_URL")
 	}
-	for _, fallback := range config.Fallbacks {
-		if fallback.TLSConfig == nil || fallback.TLSConfig.InsecureSkipVerify || fallback.TLSConfig.ServerName == "" {
-			return errors.New("production PostgreSQL connections must not allow an insecure fallback")
-		}
+	modes := connectionURL.Query()["sslmode"]
+	if (connectionURL.Scheme != "postgres" && connectionURL.Scheme != "postgresql") || len(modes) != 1 || strings.TrimSpace(modes[0]) == "" {
+		return errors.New("production requires one explicit sslmode in the DATABASE_URL PostgreSQL URI")
 	}
 	return nil
 }

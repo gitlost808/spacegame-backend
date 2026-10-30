@@ -76,7 +76,7 @@ func run(ctx context.Context, args []string, databaseURL string) error {
 	if err != nil {
 		return errors.New("invalid DATABASE_URL")
 	}
-	if err := database.ValidateTLS(&config.Config); err != nil {
+	if err := database.ValidateSSLMode(databaseURL); err != nil {
 		return err
 	}
 	db := stdlib.OpenDB(*config)
