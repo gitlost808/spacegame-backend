@@ -2,29 +2,30 @@ package httpapi
 
 import (
 	"errors"
-	"fmt"
 	"math"
 	"net/http"
 	"net/netip"
-	"os"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
 )
 
 type RateRule struct {
-	PerMinute int
-	Burst     int
+	PerMinute int `env:"PER_MINUTE"`
+	Burst     int `env:"BURST"`
 }
 
 type RateConfig struct {
-	Start, Finish, Leaderboard RateRule
-	GlobalPerSecond            int
-	GlobalBurst                int
-	MaxClients                 int
+	Start           RateRule `envPrefix:"RATE_LIMIT_START_"`
+	Finish          RateRule `envPrefix:"RATE_LIMIT_FINISH_"`
+	Leaderboard     RateRule `envPrefix:"RATE_LIMIT_LEADERBOARD_"`
+	GlobalPerSecond int      `env:"RATE_LIMIT_GLOBAL_PER_SECOND"`
+	GlobalBurst     int      `env:"RATE_LIMIT_GLOBAL_BURST"`
+	MaxClients      int      `env:"RATE_LIMIT_MAX_CLIENTS"`
 }
 
 func DefaultRateConfig() RateConfig {
@@ -36,25 +37,22 @@ func DefaultRateConfig() RateConfig {
 
 func RateConfigFromEnv() (RateConfig, error) {
 	c := DefaultRateConfig()
-	for _, item := range []struct {
-		name string
-		dst  *int
-	}{
-		{"RATE_LIMIT_START_PER_MINUTE", &c.Start.PerMinute}, {"RATE_LIMIT_START_BURST", &c.Start.Burst},
-		{"RATE_LIMIT_FINISH_PER_MINUTE", &c.Finish.PerMinute}, {"RATE_LIMIT_FINISH_BURST", &c.Finish.Burst},
-		{"RATE_LIMIT_LEADERBOARD_PER_MINUTE", &c.Leaderboard.PerMinute}, {"RATE_LIMIT_LEADERBOARD_BURST", &c.Leaderboard.Burst},
-		{"RATE_LIMIT_GLOBAL_PER_SECOND", &c.GlobalPerSecond}, {"RATE_LIMIT_GLOBAL_BURST", &c.GlobalBurst},
-		{"RATE_LIMIT_MAX_CLIENTS", &c.MaxClients},
-	} {
-		if value := os.Getenv(item.name); value != "" {
-			number, err := strconv.Atoi(value)
-			if err != nil || number < 1 || number > 1000000 {
-				return c, fmt.Errorf("%s must be an integer between 1 and 1000000", item.name)
-			}
-			*item.dst = number
+	if err := env.Parse(&c); err != nil {
+		return c, err
+	}
+	return c, c.Validate()
+}
+
+func (c RateConfig) Validate() error {
+	if c.GlobalPerSecond < 1 || c.GlobalPerSecond > 1000000 || c.GlobalBurst < 1 || c.GlobalBurst > 1000000 || c.MaxClients < 1 || c.MaxClients > 1000000 {
+		return errors.New("global request rates, bursts, and client capacity must be between 1 and 1000000")
+	}
+	for _, rule := range []RateRule{c.Start, c.Finish, c.Leaderboard} {
+		if rule.PerMinute < 1 || rule.Burst < 1 || rule.PerMinute > 1000000 || rule.Burst > 1000000 {
+			return errors.New("request rates and bursts must be between 1 and 1000000")
 		}
 	}
-	return c, nil
+	return nil
 }
 
 type clientLimits struct {
@@ -75,14 +73,11 @@ type RateLimiter struct {
 }
 
 func NewRateLimiter(config RateConfig) (*RateLimiter, error) {
-	if config.GlobalPerSecond < 1 || config.GlobalBurst < 1 || config.MaxClients < 1 {
-		return nil, errors.New("global request limits and client capacity must be positive")
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
 	ttl := 10 * time.Minute
 	for _, rule := range []RateRule{config.Start, config.Finish, config.Leaderboard} {
-		if rule.PerMinute < 1 || rule.Burst < 1 || rule.PerMinute > 1000000 || rule.Burst > 1000000 {
-			return nil, errors.New("request rates and bursts must be between 1 and 1000000")
-		}
 		// Eviction must not refill a bucket sooner than normal token accrual.
 		ttl = max(ttl, time.Duration(float64(rule.Burst)/float64(rule.PerMinute)*float64(time.Minute)))
 	}

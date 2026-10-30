@@ -12,7 +12,8 @@ Goose executes each migration in a transaction by default. Statements that
 require running outside a transaction, such as `CREATE INDEX CONCURRENTLY`, need
 the `-- +goose NO TRANSACTION` annotation.
 
-With `DATABASE_URL` exported:
+With `DATABASE_URL` or `DATABASE_URL_FILE` configured (through `.env` locally,
+or injected environment variables in production):
 
 ```sh
 make migrate-status

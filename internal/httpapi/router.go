@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -30,7 +32,24 @@ func NewHandler(logger *slog.Logger, db ReadinessChecker, config Config) (*gin.E
 		logger.Error("request panicked", "error", fmt.Sprint(recovered), "stack", string(debug.Stack()))
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 	}))
-	router.Use(cors(config.AllowedOrigins))
+	corsConfig := cors.Config{
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowHeaders: []string{"Authorization", "Content-Type"},
+		MaxAge:       10 * time.Minute,
+	}
+	for _, origin := range config.AllowedOrigins {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			corsConfig.AllowOrigins = append(corsConfig.AllowOrigins, origin)
+		}
+	}
+	if len(corsConfig.AllowOrigins) == 0 {
+		// Same-origin requests pass through; no other browser origins are allowed.
+		corsConfig.AllowOriginFunc = func(string) bool { return false }
+	}
+	if err := corsConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid CORS configuration: %w", err)
+	}
+	router.Use(cors.New(corsConfig))
 	router.GET("/healthz", health)
 	router.HEAD("/healthz", func(c *gin.Context) { c.Status(http.StatusOK) })
 	router.GET("/readyz", func(c *gin.Context) {

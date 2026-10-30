@@ -32,8 +32,11 @@ the process checks connectivity with a five-second timeout.
 
 ## Runtime configuration
 
-The process reads environment variables directly and does not load `.env`.
-Set `APP_ENV=production` explicitly for both server and migration jobs.
+Set `APP_ENV=production` explicitly for both server and migration jobs. In
+production the process reads injected environment variables and mounted
+secrets, and never loads `.env`. Optional `.env` loading is limited to local
+development when `APP_ENV` is unset, empty, or `development`. Existing process
+variables always take precedence over local defaults.
 
 | Variable | Default | Infrastructure setting |
 | --- | --- | --- |

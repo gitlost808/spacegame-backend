@@ -10,15 +10,23 @@ development also requires Docker Compose. Database migrations use
 
 ```sh
 cp .env.example .env
-sh -ac '. ./.env && make db-up && make migrate-up && make run'
+make db-up
+make migrate-up
+make run
 ```
 
-The Go process reads configuration from environment variables; it does not load
-`.env` automatically. The `sh -ac` command loads and exports `.env` in a POSIX
-shell, starts PostgreSQL, applies migrations, and runs the server. It works
-when launched from Bash, Zsh, or Fish without changing your current shell's
-environment. Docker must be running. If you already have a `.env`, keep it
-instead of copying over it, and edit its settings before starting the service.
+The server and migration command load `.env` automatically for local development
+using [godotenv](https://github.com/joho/godotenv). Existing process variables
+take precedence, including explicitly empty values. No shell export commands
+are needed. Docker Compose also reads `.env`. Docker must be running. If you
+already have a `.env`, keep it instead of copying over it, and edit its settings
+before starting the service.
+
+`.env` is optional and is loaded only when `APP_ENV` is unset, empty, or
+`development`. Set `APP_ENV=production` in your infrastructure configuration;
+production processes use only injected variables and mounted secrets.
+Configuration uses [caarlos0/env](https://github.com/caarlos0/env) for typed
+parsing; invalid settings fail startup.
 
 The server requires `DATABASE_URL` or `DATABASE_URL_FILE` and verifies the
 connection before accepting HTTP requests. To use an existing PostgreSQL
@@ -27,7 +35,7 @@ database, set `DATABASE_URL` to its connection string and skip `make db-up`.
 The server listens on `:8080` by default. Set `HTTP_ADDR` to change the address:
 
 ```sh
-sh -ac '. ./.env && HTTP_ADDR=127.0.0.1:8081 make run'
+env HTTP_ADDR=127.0.0.1:8081 make run
 ```
 
 Use a different port from `METRICS_ADDR`, which defaults to
@@ -77,7 +85,8 @@ make migrate-down  # Roll back the most recent migration
 ```
 
 Creating a migration does not need a database connection. All other commands
-require `DATABASE_URL`. No separate Goose installation is needed: the
+require `DATABASE_URL` or `DATABASE_URL_FILE`, supplied through `.env` locally
+or the process environment. No separate Goose installation is needed: the
 `cmd/migrate` command uses the pinned library and PostgreSQL driver.
 
 The initial migration creates the game session table and leaderboard index.
@@ -148,8 +157,11 @@ submissions; they do not prove that a client actually played a game.
 
 The example environment enables the frontend at `http://localhost:5173`.
 Set `CORS_ALLOWED_ORIGINS` to your game's exact origin when hosted separately;
-JSON and Authorization preflights are supported. Without configured origins,
-the browser frontend must use the same origin as the API.
+JSON and Authorization preflights are supported by
+[gin-contrib/cors](https://github.com/gin-contrib/cors). Without configured
+origins, the browser frontend must use the same origin as the API. Unlisted
+cross-origin requests and preflights return HTTP 403. `*` allows any origin
+without enabling cookie credentials.
 
 Per-client request limits default to starts 30/minute (burst 10), finishes
 120/minute (burst 20), and leaderboard reads 300/minute (burst 30). A global
@@ -244,6 +256,7 @@ Without Make, run `go test ./...`, `go vet ./...`, and
 ```text
 cmd/server/        Server entry point, configuration, and shutdown
 cmd/migrate/       Goose migration command
+internal/config/   Typed server configuration and local dotenv loading
 internal/httpapi/  Gin routes, handlers, middleware, and tests
 internal/database/ PostgreSQL connection pool and integration test
 internal/game/     Session lifecycle, score validation, and leaderboard service

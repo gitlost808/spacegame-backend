@@ -68,8 +68,26 @@ func TestCleanupConfig(t *testing.T) {
 	if err != nil || c.Interval != 5*time.Minute || c.Retention != 24*time.Hour || c.BatchSize != 1000 {
 		t.Fatalf("defaults=%+v error=%v", c, err)
 	}
-	t.Setenv("EXPIRED_SESSION_RETENTION", "-1s")
-	if _, err := CleanupConfigFromEnv(); err == nil {
-		t.Fatal("negative retention must fail")
+	t.Setenv("CLEANUP_INTERVAL", "10s")
+	t.Setenv("EXPIRED_SESSION_RETENTION", "0s")
+	t.Setenv("CLEANUP_BATCH_SIZE", "25")
+	if got, err := CleanupConfigFromEnv(); err != nil || got.Interval != 10*time.Second || got.Retention != 0 || got.BatchSize != 25 {
+		t.Fatalf("overrides=%+v error=%v", got, err)
+	}
+	for _, tt := range []struct{ name, value string }{
+		{"CLEANUP_INTERVAL", "invalid"},
+		{"CLEANUP_INTERVAL", "100ms"},
+		{"EXPIRED_SESSION_RETENTION", "-1s"},
+		{"CLEANUP_BATCH_SIZE", "not-an-integer"},
+		{"CLEANUP_BATCH_SIZE", "2147483648"},
+		{"CLEANUP_BATCH_SIZE", "0"},
+		{"CLEANUP_BATCH_SIZE", "10001"},
+	} {
+		t.Run(tt.name+"="+tt.value, func(t *testing.T) {
+			t.Setenv(tt.name, tt.value)
+			if _, err := CleanupConfigFromEnv(); err == nil {
+				t.Fatalf("%s=%s must fail", tt.name, tt.value)
+			}
+		})
 	}
 }

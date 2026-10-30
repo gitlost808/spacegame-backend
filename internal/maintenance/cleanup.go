@@ -3,41 +3,24 @@ package maintenance
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
-	"os"
-	"strconv"
 	"time"
+
+	"github.com/caarlos0/env/v11"
 
 	"spacegame-backend/internal/store"
 )
 
 type CleanupConfig struct {
-	Interval  time.Duration
-	Retention time.Duration
-	BatchSize int32
+	Interval  time.Duration `env:"CLEANUP_INTERVAL"`
+	Retention time.Duration `env:"EXPIRED_SESSION_RETENTION"`
+	BatchSize int32         `env:"CLEANUP_BATCH_SIZE"`
 }
 
 func CleanupConfigFromEnv() (CleanupConfig, error) {
 	config := CleanupConfig{Interval: 5 * time.Minute, Retention: 24 * time.Hour, BatchSize: 1000}
-	for _, item := range []struct {
-		name string
-		dst  *time.Duration
-	}{{"CLEANUP_INTERVAL", &config.Interval}, {"EXPIRED_SESSION_RETENTION", &config.Retention}} {
-		if value := os.Getenv(item.name); value != "" {
-			duration, err := time.ParseDuration(value)
-			if err != nil {
-				return config, fmt.Errorf("invalid %s: %w", item.name, err)
-			}
-			*item.dst = duration
-		}
-	}
-	if value := os.Getenv("CLEANUP_BATCH_SIZE"); value != "" {
-		size, err := strconv.ParseInt(value, 10, 32)
-		if err != nil {
-			return config, errors.New("CLEANUP_BATCH_SIZE must be an integer")
-		}
-		config.BatchSize = int32(size)
+	if err := env.Parse(&config); err != nil {
+		return config, err
 	}
 	return config, config.Validate()
 }

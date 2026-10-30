@@ -169,15 +169,66 @@ func TestBrowserPreflight(t *testing.T) {
 		r.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
-		if w.Code != http.StatusNoContent {
-			t.Fatalf("preflight status = %d", w.Code)
-		}
 		want := ""
+		wantStatus := http.StatusForbidden
 		if origin == "https://game.example" {
 			want = origin
+			wantStatus = http.StatusNoContent
+			if w.Header().Get("Access-Control-Max-Age") != "600" || !strings.Contains(w.Header().Get("Access-Control-Allow-Headers"), "Authorization") || !strings.Contains(w.Header().Get("Access-Control-Allow-Headers"), "Content-Type") {
+				t.Fatalf("preflight is missing authorization, JSON, or cache settings: %v", w.Header())
+			}
+		}
+		if w.Code != wantStatus {
+			t.Fatalf("origin %s: preflight status = %d, want %d", origin, w.Code, wantStatus)
 		}
 		if got := w.Header().Get("Access-Control-Allow-Origin"); got != want {
 			t.Errorf("origin %s: allowed origin = %q, want %q", origin, got, want)
 		}
+	}
+}
+
+func TestCORSRequests(t *testing.T) {
+	for _, tt := range []struct {
+		name, origin, allowed string
+		origins               []string
+		status                int
+	}{
+		{"no origin", "", "", nil, 200},
+		{"same origin", "http://example.com", "", nil, 200},
+		{"unconfigured cross origin", "https://other.example", "", nil, 403},
+		{"allowed origin", "https://game.example", "https://game.example", []string{" https://game.example ", ""}, 200},
+		{"blocked origin", "https://other.example", "", []string{"https://game.example"}, 403},
+		{"wildcard", "https://other.example", "*", []string{"*"}, 200},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			handler := gameRouter(stubGame{list: func(int32) ([]game.Entry, error) {
+				called = true
+				return []game.Entry{}, nil
+			}}, tt.origins...)
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/leaderboard", nil)
+			r.Header.Set("Origin", tt.origin)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code != tt.status || w.Header().Get("Access-Control-Allow-Origin") != tt.allowed {
+				t.Fatalf("status=%d headers=%v", w.Code, w.Header())
+			}
+			if called != (tt.status == http.StatusOK) {
+				t.Fatal("disallowed browser origins must not reach the game service")
+			}
+			if w.Header().Get("Access-Control-Allow-Credentials") != "" {
+				t.Fatal("CORS must not enable cookie credentials")
+			}
+		})
+	}
+}
+
+func TestInvalidCORSConfiguration(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	_, err := httpapi.NewHandler(logger, pingFunc(func(context.Context) error { return nil }), httpapi.Config{
+		AllowedOrigins: []string{"not-an-origin"},
+	})
+	if err == nil {
+		t.Fatal("invalid CORS settings must fail configuration")
 	}
 }

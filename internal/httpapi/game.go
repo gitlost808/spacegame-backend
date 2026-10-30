@@ -147,27 +147,3 @@ func readJSON(c *gin.Context, destination any) bool {
 	}
 	return true
 }
-
-func cors(origins []string) gin.HandlerFunc {
-	allowed := make(map[string]bool, len(origins))
-	for _, origin := range origins {
-		if origin = strings.TrimSpace(origin); origin != "" {
-			allowed[origin] = true
-		}
-	}
-	return func(c *gin.Context) {
-		origin := c.GetHeader("Origin")
-		c.Writer.Header().Add("Vary", "Origin")
-		if origin != "" && (allowed[origin] || allowed["*"]) {
-			c.Header("Access-Control-Allow-Origin", origin)
-			c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type")
-			c.Header("Access-Control-Max-Age", "600")
-		}
-		if c.Request.Method == http.MethodOptions {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-		c.Next()
-	}
-}

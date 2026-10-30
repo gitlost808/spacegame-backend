@@ -2,17 +2,16 @@ package game
 
 import (
 	"errors"
-	"fmt"
-	"os"
-	"strconv"
 	"time"
+
+	"github.com/caarlos0/env/v11"
 )
 
 // Policy defines the plausibility limits for a completed run.
 type Policy struct {
-	MinDuration       time.Duration
-	MaxDuration       time.Duration
-	MaxScorePerSecond int64
+	MinDuration       time.Duration `env:"SESSION_MIN_DURATION"`
+	MaxDuration       time.Duration `env:"SESSION_MAX_DURATION"`
+	MaxScorePerSecond int64         `env:"MAX_SCORE_PER_SECOND"`
 }
 
 func DefaultPolicy() Policy {
@@ -29,27 +28,8 @@ func (p Policy) Validate() error {
 // PolicyFromEnv reads optional limits, using defaults for unset variables.
 func PolicyFromEnv() (Policy, error) {
 	policy := DefaultPolicy()
-	for _, field := range []struct {
-		name  string
-		value *time.Duration
-	}{
-		{"SESSION_MIN_DURATION", &policy.MinDuration},
-		{"SESSION_MAX_DURATION", &policy.MaxDuration},
-	} {
-		if value := os.Getenv(field.name); value != "" {
-			duration, err := time.ParseDuration(value)
-			if err != nil {
-				return Policy{}, fmt.Errorf("%s must be a Go duration: %w", field.name, err)
-			}
-			*field.value = duration
-		}
-	}
-	if value := os.Getenv("MAX_SCORE_PER_SECOND"); value != "" {
-		rate, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return Policy{}, fmt.Errorf("MAX_SCORE_PER_SECOND must be an integer: %w", err)
-		}
-		policy.MaxScorePerSecond = rate
+	if err := env.Parse(&policy); err != nil {
+		return Policy{}, err
 	}
 	return policy, policy.Validate()
 }

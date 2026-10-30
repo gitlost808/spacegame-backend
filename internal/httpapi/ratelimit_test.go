@@ -130,3 +130,44 @@ func TestInvalidProxyConfigFails(t *testing.T) {
 		t.Fatal("invalid trusted proxies must fail configuration")
 	}
 }
+
+func TestRateConfigFromEnv(t *testing.T) {
+	values := map[string]string{
+		"RATE_LIMIT_START_PER_MINUTE": "61", "RATE_LIMIT_START_BURST": "11",
+		"RATE_LIMIT_FINISH_PER_MINUTE": "121", "RATE_LIMIT_FINISH_BURST": "21",
+		"RATE_LIMIT_LEADERBOARD_PER_MINUTE": "301", "RATE_LIMIT_LEADERBOARD_BURST": "31",
+		"RATE_LIMIT_GLOBAL_PER_SECOND": "51", "RATE_LIMIT_GLOBAL_BURST": "101",
+		"RATE_LIMIT_MAX_CLIENTS": "10001",
+	}
+	for name := range values {
+		t.Setenv(name, "")
+	}
+	if got, err := RateConfigFromEnv(); err != nil || got != DefaultRateConfig() {
+		t.Fatalf("defaults=%+v error=%v", got, err)
+	}
+	for name, value := range values {
+		t.Setenv(name, value)
+	}
+	want := RateConfig{
+		Start: RateRule{61, 11}, Finish: RateRule{121, 21}, Leaderboard: RateRule{301, 31},
+		GlobalPerSecond: 51, GlobalBurst: 101, MaxClients: 10001,
+	}
+	if got, err := RateConfigFromEnv(); err != nil || got != want {
+		t.Fatalf("overrides=%+v error=%v", got, err)
+	}
+	for _, tt := range []struct{ name, value string }{
+		{"RATE_LIMIT_START_PER_MINUTE", "not-an-integer"},
+		{"RATE_LIMIT_FINISH_BURST", "0"},
+		{"RATE_LIMIT_LEADERBOARD_PER_MINUTE", "1000001"},
+		{"RATE_LIMIT_GLOBAL_PER_SECOND", "-1"},
+		{"RATE_LIMIT_GLOBAL_BURST", "1000001"},
+		{"RATE_LIMIT_MAX_CLIENTS", "0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.name, tt.value)
+			if _, err := RateConfigFromEnv(); err == nil {
+				t.Fatalf("%s=%s must fail", tt.name, tt.value)
+			}
+		})
+	}
+}

@@ -16,10 +16,15 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
+	"spacegame-backend/internal/config"
 	"spacegame-backend/internal/database"
 )
 
 func main() {
+	if err := config.LoadDotEnv(); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	databaseURL, err := database.URLFromEnv()

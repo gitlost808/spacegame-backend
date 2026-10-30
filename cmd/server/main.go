@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"spacegame-backend/internal/config"
 	"spacegame-backend/internal/database"
 	"spacegame-backend/internal/game"
 	"spacegame-backend/internal/httpapi"
@@ -25,24 +26,26 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if os.Getenv("GIN_MODE") == "" {
-		gin.SetMode(gin.ReleaseMode)
+	if err := config.LoadDotEnv(); err != nil {
+		logger.Error("configuration failed", "error", err)
+		os.Exit(1)
 	}
+	settings, err := config.ServerFromEnv()
+	if err != nil {
+		logger.Error("configuration failed", "error", err)
+		os.Exit(1)
+	}
+	gin.SetMode(settings.GinMode)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	addr := os.Getenv("HTTP_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
-
-	if err := run(ctx, addr, logger); err != nil {
+	if err := run(ctx, settings, logger); err != nil {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, addr string, logger *slog.Logger) error {
+func run(ctx context.Context, settings config.Server, logger *slog.Logger) error {
 	databaseURL, err := database.URLFromEnv()
 	if err != nil {
 		return err
@@ -81,8 +84,8 @@ func run(ctx context.Context, addr string, logger *slog.Logger) error {
 	}
 	metrics := observability.NewMetrics()
 	handler, err := httpapi.NewHandler(logger, database.Readiness{Pool: pool, Versions: versions}, httpapi.Config{
-		Game: service, AllowedOrigins: strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ","),
-		TrustedProxies: strings.Fields(strings.ReplaceAll(os.Getenv("TRUSTED_PROXIES"), ",", " ")),
+		Game: service, AllowedOrigins: settings.AllowedOrigins,
+		TrustedProxies: strings.Fields(strings.ReplaceAll(settings.TrustedProxies, ",", " ")),
 		Limiter:        limiter, Metrics: metrics,
 	})
 	if err != nil {
@@ -108,11 +111,7 @@ func run(ctx context.Context, addr string, logger *slog.Logger) error {
 			IdleTimeout:       60 * time.Second,
 		}
 	}
-	metricsAddr := os.Getenv("METRICS_ADDR")
-	if metricsAddr == "" {
-		metricsAddr = "127.0.0.1:9090"
-	}
-	servers := []*http.Server{newServer(addr, handler), newServer(metricsAddr, metrics.Handler())}
+	servers := []*http.Server{newServer(settings.HTTPAddr, handler), newServer(settings.MetricsAddr, metrics.Handler())}
 	serverErrors := make(chan error, len(servers))
 	for _, server := range servers {
 		go func() {
