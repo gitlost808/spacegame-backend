@@ -33,7 +33,7 @@ SELECT count(*) FROM (
 		return fmt.Errorf("required migrations are missing: %d of %d applied", applied, len(r.Versions))
 	}
 	rows, err := r.Pool.Query(ctx, `SELECT id, player_name, token_hash, started_at,
-expires_at, finished_at, score FROM game_sessions LIMIT 0`)
+expires_at, finished_at, score, checkpoint_at, checkpoint_score FROM game_sessions LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf("required game schema: %w", err)
 	}

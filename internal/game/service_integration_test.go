@@ -188,10 +188,10 @@ func TestPostgresGameSessions(t *testing.T) {
 		score   int64
 		want    error
 	}{
-		{"excessive score", 2 * time.Second, 2001, ErrInvalidScore},
-		{"negative score", 2 * time.Second, -1, ErrInvalidScore},
-		{"too short", 500 * time.Millisecond, 0, ErrTooShort},
-		{"expired", time.Hour + time.Second, 0, ErrExpired},
+		{"excessive score", 2 * time.Second, 2001, errInvalidScore},
+		{"negative score", 2 * time.Second, -1, errInvalidScore},
+		{"too short", 500 * time.Millisecond, 0, errTooShort},
+		{"expired", time.Hour + time.Second, 0, errExpired},
 	} {
 		t.Run("invalid_finish_deletes_"+tt.name, func(t *testing.T) {
 			now = start
@@ -200,7 +200,7 @@ func TestPostgresGameSessions(t *testing.T) {
 				t.Fatal(err)
 			}
 			now = start.Add(tt.elapsed)
-			if _, err := service.Finish(ctx, run.SessionID, run.SessionToken, tt.score); !errors.Is(err, tt.want) {
+			if _, err := service.Finish(ctx, run.SessionID, run.SessionToken, tt.score); !errors.Is(err, tt.want) || !errors.Is(err, ErrRunRejected) {
 				t.Fatalf("invalid finish: %v, want %v", err, tt.want)
 			}
 			if _, err := restarted.Finish(ctx, run.SessionID, run.SessionToken, 0); !errors.Is(err, ErrNotFound) {
@@ -278,7 +278,7 @@ func TestPostgresGameSessions(t *testing.T) {
 				t.Fatal(ctx.Err())
 			}
 			if rejectionWins {
-				if !errors.Is(firstErr, ErrInvalidScore) || !errors.Is(pausedErr, ErrNotFound) {
+				if !errors.Is(firstErr, errInvalidScore) || !errors.Is(pausedErr, ErrNotFound) {
 					t.Fatalf("a winning rejection must prevent the pending finish: first=%v pending=%v", firstErr, pausedErr)
 				}
 			} else {
@@ -291,6 +291,46 @@ func TestPostgresGameSessions(t *testing.T) {
 			}
 		})
 	}
+	t.Run("checkpoints", func(t *testing.T) {
+		now = start
+		run, err := service.Start(ctx, "Checkpointed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, score := range []int64{5000, 15000} {
+			now = start.Add(time.Duration(i+1) * 10 * time.Second)
+			if err := service.Checkpoint(ctx, run.SessionID, run.SessionToken, score); err != nil {
+				t.Fatalf("checkpoint %d: %v", score, err)
+			}
+		}
+		// A delayed request from an older clock reading must not move the checkpoint back.
+		stale, _ := NewService(queries, DefaultPolicy())
+		stale.now = func() time.Time { return start.Add(15 * time.Second) }
+		if err := stale.Checkpoint(ctx, run.SessionID, run.SessionToken, 15000); err != nil {
+			t.Fatalf("stale checkpoint: %v", err)
+		}
+		now = start.Add(45 * time.Second)
+		result, err := service.Finish(ctx, run.SessionID, run.SessionToken, 40000)
+		if err != nil || result.Score != 40000 {
+			t.Fatalf("finish after checkpoints: result=%+v error=%v", result, err)
+		}
+		if err := service.Checkpoint(ctx, run.SessionID, run.SessionToken, 40000); !errors.Is(err, ErrSessionFinished) {
+			t.Fatalf("checkpoint after finish: %v", err)
+		}
+
+		now = start
+		idle, err := service.Start(ctx, "Idle")
+		if err != nil {
+			t.Fatal(err)
+		}
+		now = start.Add(59 * time.Minute)
+		if _, err := service.Finish(ctx, idle.SessionID, idle.SessionToken, 59*60*1000); !errors.Is(err, errMissedCheckpoint) || !errors.Is(err, ErrRunRejected) {
+			t.Fatalf("idle run: %v", err)
+		}
+		if err := service.Checkpoint(ctx, idle.SessionID, idle.SessionToken, 0); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("a rejected run must be deleted: %v", err)
+		}
+	})
 	if err := goose.DownToContext(ctx, sqlDB, "../../migrations", 0); err != nil {
 		t.Fatalf("rollback game schema: %v", err)
 	}

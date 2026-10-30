@@ -17,6 +17,7 @@ type Querier interface {
 	FinishSession(ctx context.Context, arg FinishSessionParams) (GameSession, error)
 	GetSession(ctx context.Context, id pgtype.UUID) (GameSession, error)
 	ListLeaderboard(ctx context.Context, limit int32) ([]ListLeaderboardRow, error)
+	RecordCheckpoint(ctx context.Context, arg RecordCheckpointParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

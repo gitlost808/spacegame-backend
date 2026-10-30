@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,13 +19,17 @@ import (
 )
 
 type stubGame struct {
-	start  func(string) (game.StartedSession, error)
-	finish func(string, string, int64) (game.Result, error)
-	list   func(int32) ([]game.Entry, error)
+	start      func(string) (game.StartedSession, error)
+	checkpoint func(string, string, int64) error
+	finish     func(string, string, int64) (game.Result, error)
+	list       func(int32) ([]game.Entry, error)
 }
 
 func (s stubGame) Start(_ context.Context, name string) (game.StartedSession, error) {
 	return s.start(name)
+}
+func (s stubGame) Checkpoint(_ context.Context, id, token string, score int64) error {
+	return s.checkpoint(id, token, score)
 }
 func (s stubGame) Finish(_ context.Context, id, token string, score int64) (game.Result, error) {
 	return s.finish(id, token, score)
@@ -63,6 +68,12 @@ func TestGameEndpoints(t *testing.T) {
 			}
 			return game.StartedSession{SessionID: "session-id", SessionToken: "secret-token"}, nil
 		},
+		checkpoint: func(id, token string, score int64) error {
+			if id != "session-id" || token != "secret-token" || score != 500 {
+				t.Errorf("checkpoint arguments = %q, %q, %d", id, token, score)
+			}
+			return nil
+		},
 		finish: func(id, token string, score int64) (game.Result, error) {
 			if id != "session-id" || token != "secret-token" || score != 0 {
 				t.Errorf("finish arguments = %q, %q, %d", id, token, score)
@@ -79,6 +90,13 @@ func TestGameEndpoints(t *testing.T) {
 	start := request(handler, http.MethodPost, "/api/v1/sessions", `{"player_name":"Pilot"}`, "")
 	if start.Code != http.StatusCreated || !strings.Contains(start.Body.String(), `"session_token":"secret-token"`) {
 		t.Fatalf("start: %d %s", start.Code, start.Body)
+	}
+	if strings.Contains(start.Body.String(), "expires_at") {
+		t.Fatalf("start must not reveal the session lifetime: %s", start.Body)
+	}
+	checkpoint := request(handler, http.MethodPost, "/api/v1/sessions/session-id/checkpoint", `{"score":500}`, "secret-token")
+	if checkpoint.Code != http.StatusNoContent || checkpoint.Body.Len() != 0 {
+		t.Fatalf("checkpoint: %d %s", checkpoint.Code, checkpoint.Body)
 	}
 	finish := request(handler, http.MethodPost, "/api/v1/sessions/session-id/finish", `{"score":0}`, "secret-token")
 	if finish.Code != http.StatusOK || strings.Contains(finish.Body.String(), "token") {
@@ -109,6 +127,9 @@ func TestGameRequestValidation(t *testing.T) {
 		{"null score", "POST", "/api/v1/sessions/id/finish", `{"score":null}`, "token", "application/json", 400},
 		{"fractional score", "POST", "/api/v1/sessions/id/finish", `{"score":1.5}`, "token", "application/json", 400},
 		{"overflow score", "POST", "/api/v1/sessions/id/finish", `{"score":9223372036854775808}`, "token", "application/json", 400},
+		{"checkpoint missing authorization", "POST", "/api/v1/sessions/id/checkpoint", `{"score":0}`, "", "application/json", 401},
+		{"checkpoint missing score", "POST", "/api/v1/sessions/id/checkpoint", `{}`, "token", "application/json", 400},
+		{"checkpoint wrong content type", "POST", "/api/v1/sessions/id/checkpoint", `{"score":0}`, "token", "text/plain", 415},
 		{"zero limit", "GET", "/api/v1/leaderboard?limit=0", "", "", "", 400},
 		{"large limit", "GET", "/api/v1/leaderboard?limit=101", "", "", "", 400},
 		{"invalid limit", "GET", "/api/v1/leaderboard?limit=abc", "", "", "", 400},
@@ -155,25 +176,32 @@ func TestGameErrors(t *testing.T) {
 	}{
 		{game.ErrInvalidName, 400}, {game.ErrInvalidSessionID, 400},
 		{game.ErrUnauthorized, 401}, {game.ErrNotFound, 404},
-		{game.ErrAlreadyFinished, 409}, {game.ErrExpired, 410},
-		{game.ErrTooShort, 422}, {game.ErrInvalidScore, 422},
+		{game.ErrAlreadyFinished, 409}, {game.ErrSessionFinished, 409},
+		{fmt.Errorf("%w: score progress is not plausible", game.ErrRunRejected), 422},
+		{fmt.Errorf("%w: checkpoint gap exceeded", game.ErrRunRejected), 422},
 		{context.DeadlineExceeded, 503}, {errors.New("private database details"), 500},
 	}
 	for _, tt := range tests {
 		t.Run(tt.err.Error(), func(t *testing.T) {
-			handler := gameRouter(stubGame{finish: func(string, string, int64) (game.Result, error) {
-				return game.Result{}, tt.err
-			}})
-			w := request(handler, http.MethodPost, "/api/v1/sessions/id/finish", `{"score":0}`, "token")
-			if w.Code != tt.status {
-				t.Fatalf("response = %d %s, want %d", w.Code, w.Body, tt.status)
-			}
-			var body map[string]any
-			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-				t.Fatal(err)
-			}
-			if tt.status >= 500 && body["error"] != "service unavailable" {
-				t.Fatal("server errors must not leak database details")
+			handler := gameRouter(stubGame{
+				checkpoint: func(string, string, int64) error { return tt.err },
+				finish:     func(string, string, int64) (game.Result, error) { return game.Result{}, tt.err },
+			})
+			for _, path := range []string{"/api/v1/sessions/id/checkpoint", "/api/v1/sessions/id/finish"} {
+				w := request(handler, http.MethodPost, path, `{"score":0}`, "token")
+				if w.Code != tt.status {
+					t.Fatalf("%s: response = %d %s, want %d", path, w.Code, w.Body, tt.status)
+				}
+				var body map[string]any
+				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+					t.Fatal(err)
+				}
+				if tt.status >= 500 && body["error"] != "service unavailable" {
+					t.Fatal("server errors must not leak database details")
+				}
+				if tt.status == http.StatusUnprocessableEntity && body["error"] != "run rejected" {
+					t.Fatalf("rejections must not reveal which limit failed: %s", w.Body)
+				}
 			}
 		})
 	}

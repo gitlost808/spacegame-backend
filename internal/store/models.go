@@ -11,11 +11,13 @@ import (
 )
 
 type GameSession struct {
-	ID         pgtype.UUID
-	PlayerName string
-	TokenHash  []byte
-	StartedAt  time.Time
-	ExpiresAt  time.Time
-	FinishedAt pgtype.Timestamptz
-	Score      pgtype.Int8
+	ID              pgtype.UUID
+	PlayerName      string
+	TokenHash       []byte
+	StartedAt       time.Time
+	ExpiresAt       time.Time
+	FinishedAt      pgtype.Timestamptz
+	Score           pgtype.Int8
+	CheckpointAt    time.Time
+	CheckpointScore int64
 }

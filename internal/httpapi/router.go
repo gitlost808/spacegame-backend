@@ -81,6 +81,7 @@ func NewHandler(logger *slog.Logger, db ReadinessChecker, config Config) (*gin.E
 		return func(c *gin.Context) { c.Next() }
 	}
 	api.POST("/sessions", limit("start"), handler.start)
+	api.POST("/sessions/:id/checkpoint", limit("checkpoint"), handler.checkpoint)
 	api.POST("/sessions/:id/finish", limit("finish"), handler.finish)
 	api.GET("/leaderboard", limit("leaderboard"), handler.leaderboard)
 	return router, nil

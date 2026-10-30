@@ -13,9 +13,9 @@ import (
 )
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO game_sessions (player_name, token_hash, started_at, expires_at)
-VALUES ($1, $2, $3, $4)
-RETURNING id, player_name, token_hash, started_at, expires_at, finished_at, score
+INSERT INTO game_sessions (player_name, token_hash, started_at, expires_at, checkpoint_at)
+VALUES ($1, $2, $3, $4, $3)
+RETURNING id, player_name, token_hash, started_at, expires_at, finished_at, score, checkpoint_at, checkpoint_score
 `
 
 type CreateSessionParams struct {
@@ -41,6 +41,8 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (G
 		&i.ExpiresAt,
 		&i.FinishedAt,
 		&i.Score,
+		&i.CheckpointAt,
+		&i.CheckpointScore,
 	)
 	return i, err
 }
@@ -98,7 +100,7 @@ WHERE id = $3
   AND token_hash = $4
   AND finished_at IS NULL
   AND expires_at >= $2
-RETURNING id, player_name, token_hash, started_at, expires_at, finished_at, score
+RETURNING id, player_name, token_hash, started_at, expires_at, finished_at, score, checkpoint_at, checkpoint_score
 `
 
 type FinishSessionParams struct {
@@ -124,12 +126,14 @@ func (q *Queries) FinishSession(ctx context.Context, arg FinishSessionParams) (G
 		&i.ExpiresAt,
 		&i.FinishedAt,
 		&i.Score,
+		&i.CheckpointAt,
+		&i.CheckpointScore,
 	)
 	return i, err
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, player_name, token_hash, started_at, expires_at, finished_at, score FROM game_sessions WHERE id = $1
+SELECT id, player_name, token_hash, started_at, expires_at, finished_at, score, checkpoint_at, checkpoint_score FROM game_sessions WHERE id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id pgtype.UUID) (GameSession, error) {
@@ -143,6 +147,8 @@ func (q *Queries) GetSession(ctx context.Context, id pgtype.UUID) (GameSession, 
 		&i.ExpiresAt,
 		&i.FinishedAt,
 		&i.Score,
+		&i.CheckpointAt,
+		&i.CheckpointScore,
 	)
 	return i, err
 }
@@ -187,4 +193,34 @@ func (q *Queries) ListLeaderboard(ctx context.Context, limit int32) ([]ListLeade
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordCheckpoint = `-- name: RecordCheckpoint :execrows
+UPDATE game_sessions
+SET checkpoint_score = $1, checkpoint_at = $2
+WHERE id = $3
+  AND token_hash = $4
+  AND finished_at IS NULL
+  AND checkpoint_at < $2
+  AND expires_at >= $2
+`
+
+type RecordCheckpointParams struct {
+	CheckpointScore int64
+	CheckpointAt    time.Time
+	ID              pgtype.UUID
+	TokenHash       []byte
+}
+
+func (q *Queries) RecordCheckpoint(ctx context.Context, arg RecordCheckpointParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordCheckpoint,
+		arg.CheckpointScore,
+		arg.CheckpointAt,
+		arg.ID,
+		arg.TokenHash,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

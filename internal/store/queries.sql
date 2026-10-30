@@ -1,6 +1,6 @@
 -- name: CreateSession :one
-INSERT INTO game_sessions (player_name, token_hash, started_at, expires_at)
-VALUES ($1, $2, $3, $4)
+INSERT INTO game_sessions (player_name, token_hash, started_at, expires_at, checkpoint_at)
+VALUES ($1, $2, $3, $4, $3)
 RETURNING *;
 
 -- name: GetSession :one
@@ -20,6 +20,15 @@ WHERE id = sqlc.arg(id)
   AND finished_at IS NULL
   AND expires_at >= sqlc.arg(finished_at)
 RETURNING *;
+
+-- name: RecordCheckpoint :execrows
+UPDATE game_sessions
+SET checkpoint_score = sqlc.arg(checkpoint_score), checkpoint_at = sqlc.arg(checkpoint_at)
+WHERE id = sqlc.arg(id)
+  AND token_hash = sqlc.arg(token_hash)
+  AND finished_at IS NULL
+  AND checkpoint_at < sqlc.arg(checkpoint_at)
+  AND expires_at >= sqlc.arg(checkpoint_at);
 
 -- name: ListLeaderboard :many
 SELECT id, player_name, score, started_at, finished_at

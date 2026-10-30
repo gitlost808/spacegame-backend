@@ -33,7 +33,7 @@ func TestRateLimitRefillAndScope(t *testing.T) {
 	if l.allow("a", "start") != 0 || l.allow("a", "start") != 0 || l.allow("a", "start") <= 0 {
 		t.Fatal("start burst must allow exactly two requests")
 	}
-	if l.allow("b", "start") != 0 || l.allow("a", "finish") != 0 {
+	if l.allow("b", "start") != 0 || l.allow("a", "finish") != 0 || l.allow("a", "checkpoint") != 0 {
 		t.Fatal("client and route buckets must be independent")
 	}
 	*now = now.Add(time.Second)
@@ -134,6 +134,7 @@ func TestInvalidProxyConfigFails(t *testing.T) {
 func TestRateConfigFromEnv(t *testing.T) {
 	values := map[string]string{
 		"RATE_LIMIT_START_PER_MINUTE": "61", "RATE_LIMIT_START_BURST": "11",
+		"RATE_LIMIT_CHECKPOINT_PER_MINUTE": "241", "RATE_LIMIT_CHECKPOINT_BURST": "31",
 		"RATE_LIMIT_FINISH_PER_MINUTE": "121", "RATE_LIMIT_FINISH_BURST": "21",
 		"RATE_LIMIT_LEADERBOARD_PER_MINUTE": "301", "RATE_LIMIT_LEADERBOARD_BURST": "31",
 		"RATE_LIMIT_GLOBAL_PER_SECOND": "51", "RATE_LIMIT_GLOBAL_BURST": "101",
@@ -149,7 +150,7 @@ func TestRateConfigFromEnv(t *testing.T) {
 		t.Setenv(name, value)
 	}
 	want := RateConfig{
-		Start: RateRule{61, 11}, Finish: RateRule{121, 21}, Leaderboard: RateRule{301, 31},
+		Start: RateRule{61, 11}, Checkpoint: RateRule{241, 31}, Finish: RateRule{121, 21}, Leaderboard: RateRule{301, 31},
 		GlobalPerSecond: 51, GlobalBurst: 101, MaxClients: 10001,
 	}
 	if got, err := RateConfigFromEnv(); err != nil || got != want {
@@ -158,6 +159,7 @@ func TestRateConfigFromEnv(t *testing.T) {
 	for _, tt := range []struct{ name, value string }{
 		{"RATE_LIMIT_START_PER_MINUTE", "not-an-integer"},
 		{"RATE_LIMIT_FINISH_BURST", "0"},
+		{"RATE_LIMIT_CHECKPOINT_BURST", "0"},
 		{"RATE_LIMIT_LEADERBOARD_PER_MINUTE", "1000001"},
 		{"RATE_LIMIT_GLOBAL_PER_SECOND", "-1"},
 		{"RATE_LIMIT_GLOBAL_BURST", "1000001"},
