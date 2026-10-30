@@ -100,6 +100,7 @@ See [migrations/README.md](migrations/README.md) for deployment conventions.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/api/v1/sessions` | Start a run and receive its private finish token |
+| POST | `/api/v1/sessions/{session_id}/checkpoint` | Report the run's current total score |
 | POST | `/api/v1/sessions/{session_id}/finish` | Validate and record the final score |
 | GET | `/api/v1/leaderboard?limit=20` | List the best completed runs, with ranks |
 
