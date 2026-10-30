@@ -27,10 +27,18 @@ var (
 	ErrUnauthorized     = errors.New("a valid session token is required")
 	ErrNotFound         = errors.New("session not found")
 	ErrAlreadyFinished  = errors.New("session has already finished with a different score")
-	ErrExpired          = errors.New("session has expired")
-	ErrTooShort         = errors.New("session duration is below the configured minimum")
-	ErrInvalidScore     = errors.New("score must be non-negative and within the configured score-per-second limit")
+	ErrSessionFinished  = errors.New("session has already finished")
+	ErrRunRejected      = errors.New("run rejected")
 	ErrInvalidLimit     = errors.New("limit must be between 1 and 100")
+)
+
+// Rejection reasons wrap ErrRunRejected for logs and tests. Clients only see
+// ErrRunRejected so responses do not reveal which plausibility limit failed.
+var (
+	errExpired          = errors.New("session has expired")
+	errTooShort         = errors.New("session duration is below the minimum")
+	errInvalidScore     = errors.New("score progress is not plausible")
+	errMissedCheckpoint = errors.New("checkpoint gap exceeded")
 )
 
 type StartedSession struct {
@@ -38,7 +46,6 @@ type StartedSession struct {
 	SessionToken string    `json:"session_token"`
 	PlayerName   string    `json:"player_name"`
 	StartedAt    time.Time `json:"started_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
 }
 
 type Result struct {
@@ -95,39 +102,68 @@ func (s *Service) Start(ctx context.Context, name string) (StartedSession, error
 	}
 	return StartedSession{
 		SessionID: session.ID.String(), SessionToken: token, PlayerName: session.PlayerName,
-		StartedAt: session.StartedAt, ExpiresAt: session.ExpiresAt,
+		StartedAt: session.StartedAt,
 	}, nil
 }
 
-func (s *Service) Finish(ctx context.Context, id, token string, score int64) (Result, error) {
-	var sessionID pgtype.UUID
-	if err := sessionID.Scan(id); err != nil || !sessionID.Valid {
-		return Result{}, ErrInvalidSessionID
-	}
-	session, err := s.queries.GetSession(ctx, sessionID)
+// Checkpoint records the run's current total score. Runs must report progress
+// at least every MaxCheckpointGap, so an idle session cannot claim a score later.
+func (s *Service) Checkpoint(ctx context.Context, id, token string, score int64) error {
+	sessionID, session, hash, err := s.authenticate(ctx, id, token)
 	if err != nil {
-		return Result{}, sessionError(err)
+		return err
 	}
-	hash := sha256.Sum256([]byte(token))
-	if token == "" || subtle.ConstantTimeCompare(hash[:], session.TokenHash) != 1 {
-		return Result{}, ErrUnauthorized
+	if session.FinishedAt.Valid {
+		return ErrSessionFinished
+	}
+	at := s.now().UTC().Truncate(time.Microsecond)
+	if reason := s.checkProgress(session, at, score); reason != nil {
+		if _, err := s.reject(ctx, sessionID, hash, reason); err != nil {
+			return err
+		}
+		return ErrSessionFinished
+	}
+	recorded, err := s.queries.RecordCheckpoint(ctx, store.RecordCheckpointParams{
+		ID: sessionID, TokenHash: hash, CheckpointScore: score, CheckpointAt: at,
+	})
+	if err != nil {
+		return fmt.Errorf("record checkpoint: %w", err)
+	}
+	if recorded == 0 {
+		// A concurrent finish, rejection, or newer checkpoint won the conditional update.
+		session, err := s.queries.GetSession(ctx, sessionID)
+		if err != nil {
+			return sessionError(err)
+		}
+		if session.FinishedAt.Valid {
+			return ErrSessionFinished
+		}
+	}
+	return nil
+}
+
+func (s *Service) Finish(ctx context.Context, id, token string, score int64) (Result, error) {
+	sessionID, session, hash, err := s.authenticate(ctx, id, token)
+	if err != nil {
+		return Result{}, err
 	}
 	if session.FinishedAt.Valid {
 		return existingResult(session, score)
 	}
 	finishedAt := s.now().UTC().Truncate(time.Microsecond)
-	if finishedAt.After(session.ExpiresAt) {
-		return s.rejectFinish(ctx, sessionID, hash[:], score, ErrExpired)
+	reason := s.checkProgress(session, finishedAt, score)
+	if reason == nil && finishedAt.Sub(session.StartedAt) < s.policy.MinDuration {
+		reason = errTooShort
 	}
-	elapsed := finishedAt.Sub(session.StartedAt)
-	if elapsed < s.policy.MinDuration {
-		return s.rejectFinish(ctx, sessionID, hash[:], score, ErrTooShort)
-	}
-	if score < 0 || float64(score) > float64(s.policy.MaxScorePerSecond)*elapsed.Seconds() {
-		return s.rejectFinish(ctx, sessionID, hash[:], score, ErrInvalidScore)
+	if reason != nil {
+		session, err := s.reject(ctx, sessionID, hash, reason)
+		if err != nil {
+			return Result{}, err
+		}
+		return existingResult(session, score)
 	}
 	session, err = s.queries.FinishSession(ctx, store.FinishSessionParams{
-		ID: sessionID, TokenHash: hash[:],
+		ID: sessionID, TokenHash: hash,
 		Score:      pgtype.Int8{Int64: score, Valid: true},
 		FinishedAt: pgtype.Timestamptz{Time: finishedAt, Valid: true},
 	})
@@ -145,22 +181,55 @@ func (s *Service) Finish(ctx context.Context, id, token string, score int64) (Re
 	return result(session), nil
 }
 
-func (s *Service) rejectFinish(ctx context.Context, id pgtype.UUID, tokenHash []byte, score int64, reason error) (Result, error) {
+func (s *Service) authenticate(ctx context.Context, id, token string) (pgtype.UUID, store.GameSession, []byte, error) {
+	var sessionID pgtype.UUID
+	if err := sessionID.Scan(id); err != nil || !sessionID.Valid {
+		return sessionID, store.GameSession{}, nil, ErrInvalidSessionID
+	}
+	session, err := s.queries.GetSession(ctx, sessionID)
+	if err != nil {
+		return sessionID, store.GameSession{}, nil, sessionError(err)
+	}
+	hash := sha256.Sum256([]byte(token))
+	if token == "" || subtle.ConstantTimeCompare(hash[:], session.TokenHash) != 1 {
+		return sessionID, store.GameSession{}, nil, ErrUnauthorized
+	}
+	return sessionID, session, hash[:], nil
+}
+
+// checkProgress validates the score reported at `at` against the last checkpoint.
+func (s *Service) checkProgress(session store.GameSession, at time.Time, score int64) error {
+	// Clock skew between instances must not place the last checkpoint in the future.
+	since := max(at.Sub(session.CheckpointAt), 0)
+	switch {
+	case at.After(session.ExpiresAt):
+		return errExpired
+	case since > s.policy.MaxCheckpointGap:
+		return errMissedCheckpoint
+	case score < session.CheckpointScore || float64(score-session.CheckpointScore) > float64(s.policy.MaxScorePerSecond)*since.Seconds():
+		return errInvalidScore
+	}
+	return nil
+}
+
+// reject deletes an unfinished run. If the run was already finished or deleted
+// concurrently, it returns the current state instead.
+func (s *Service) reject(ctx context.Context, id pgtype.UUID, tokenHash []byte, reason error) (store.GameSession, error) {
 	deleted, err := s.queries.DeleteUnfinishedSession(ctx, store.DeleteUnfinishedSessionParams{
 		ID: id, TokenHash: tokenHash,
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("delete rejected session: %w", err)
+		return store.GameSession{}, fmt.Errorf("delete rejected session: %w", err)
 	}
 	if deleted > 0 {
-		return Result{}, reason
+		return store.GameSession{}, fmt.Errorf("%w: %w", ErrRunRejected, reason)
 	}
 	// A concurrent finish may have completed the run, or another rejection deleted it.
 	session, err := s.queries.GetSession(ctx, id)
 	if err != nil {
-		return Result{}, sessionError(err)
+		return store.GameSession{}, sessionError(err)
 	}
-	return existingResult(session, score)
+	return session, nil
 }
 
 func (s *Service) Leaderboard(ctx context.Context, limit int32) ([]Entry, error) {

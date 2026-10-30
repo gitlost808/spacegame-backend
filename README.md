@@ -112,7 +112,7 @@ curl -X POST http://localhost:8080/api/v1/sessions \
 ```
 
 The HTTP 201 response contains `session_id`, `session_token`, `player_name`,
-`started_at`, and `expires_at`. Keep the token for this run. Names are trimmed
+and `started_at`. Keep the token for this run. Names are trimmed
 and must contain 1–32 Unicode characters without control characters.
 Names also pass local checks for English/German profanity and extremist
 references before a session is created. Rejected names return HTTP 400 with
@@ -125,8 +125,20 @@ The policy blocks extremist slogans and coded combinations, including
 `ADOLF HILTER 88 HEIL`; ordinary names or `88` alone are not blocked.
 Existing leaderboard entries are not changed by the filter.
 
-When gameplay ends, replace `SESSION_ID` and `SESSION_TOKEN` with the values
-from the start response:
+During gameplay, report the run's current total score at least every
+`SESSION_MAX_CHECKPOINT_GAP` (30 seconds by default). Sending one every 10
+seconds leaves room for slow networks. Replace `SESSION_ID` and `SESSION_TOKEN`
+with the values from the start response:
+
+```sh
+curl -X POST http://localhost:8080/api/v1/sessions/SESSION_ID/checkpoint \
+  -H 'Authorization: Bearer SESSION_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"score":500}'
+```
+
+An accepted checkpoint returns HTTP 204. Checkpoints on a finished run return
+HTTP 409. When gameplay ends, finish the run with the final score:
 
 ```sh
 curl -X POST http://localhost:8080/api/v1/sessions/SESSION_ID/finish \
@@ -154,15 +166,21 @@ Validation uses these configurable starter defaults:
 | --- | --- | --- |
 | `SESSION_MIN_DURATION` | `1s` | Shortest accepted run; may be set to `0s` |
 | `SESSION_MAX_DURATION` | `1h` | Lifetime of a newly started session |
-| `MAX_SCORE_PER_SECOND` | `1000` | Highest accepted average score rate |
+| `MAX_SCORE_PER_SECOND` | `1000` | Highest accepted score rate between checkpoints |
+| `SESSION_MAX_CHECKPOINT_GAP` | `30s` | Longest allowed time between start, checkpoints, and finish |
 | `CORS_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to read the API |
 
-Tune these limits to the game's scoring rules. The score must be non-negative
-and no greater than elapsed seconds multiplied by `MAX_SCORE_PER_SECOND`.
-Expired sessions return HTTP 410; implausible scores or durations return 422.
-An authenticated finish with a negative/excessive score, too-short duration,
-or expired session deletes the unfinished session before returning that error.
-Further attempts return 404, even if the score is corrected. Missing or wrong
+Tune these limits to the game's scoring rules. Each checkpoint and the final
+score must not decrease, and may grow by at most `MAX_SCORE_PER_SECOND` per
+second since the previous checkpoint (or the start). No gap between start,
+checkpoints, and finish may exceed `SESSION_MAX_CHECKPOINT_GAP`, so a session
+left idle cannot later claim a score. Runs must also last at least
+`SESSION_MIN_DURATION` and end before the session expires.
+
+Any failed check returns HTTP 422 with `{"error":"run rejected"}` and deletes
+the unfinished session. The response does not say which limit failed, so
+clients cannot probe the policy; the server logs the reason. Further attempts
+return 404, even if the score is corrected. Missing or wrong
 tokens do not delete sessions. Completed results remain protected, including
 when a valid finish races with an invalid attempt. Malformed HTTP/JSON requests
 are rejected without consuming the session.

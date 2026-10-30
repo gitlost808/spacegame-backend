@@ -20,6 +20,7 @@ import (
 
 type GameService interface {
 	Start(context.Context, string) (game.StartedSession, error)
+	Checkpoint(context.Context, string, string, int64) error
 	Finish(context.Context, string, string, int64) (game.Result, error)
 	Leaderboard(context.Context, int32) ([]game.Entry, error)
 }
@@ -54,30 +55,53 @@ func (h gameHandler) start(c *gin.Context) {
 	c.JSON(http.StatusCreated, session)
 }
 
-func (h gameHandler) finish(c *gin.Context) {
-	credentials := strings.Fields(c.GetHeader("Authorization"))
-	if len(credentials) != 2 || !strings.EqualFold(credentials[0], "Bearer") {
-		h.writeError(c, game.ErrUnauthorized)
-		return
-	}
-	var body struct {
-		Score *int64 `json:"score"`
-	}
-	if !readJSON(c, &body) {
-		return
-	}
-	if body.Score == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "score is required and must be an integer"})
+func (h gameHandler) checkpoint(c *gin.Context) {
+	token, score, ok := h.readScore(c)
+	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	result, err := h.service.Finish(ctx, c.Param("id"), credentials[1], *body.Score)
+	if err := h.service.Checkpoint(ctx, c.Param("id"), token, score); err != nil {
+		h.writeError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h gameHandler) finish(c *gin.Context) {
+	token, score, ok := h.readScore(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	result, err := h.service.Finish(ctx, c.Param("id"), token, score)
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// readScore reads the bearer token and the required integer score of a run update.
+func (h gameHandler) readScore(c *gin.Context) (string, int64, bool) {
+	credentials := strings.Fields(c.GetHeader("Authorization"))
+	if len(credentials) != 2 || !strings.EqualFold(credentials[0], "Bearer") {
+		h.writeError(c, game.ErrUnauthorized)
+		return "", 0, false
+	}
+	var body struct {
+		Score *int64 `json:"score"`
+	}
+	if !readJSON(c, &body) {
+		return "", 0, false
+	}
+	if body.Score == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "score is required and must be an integer"})
+		return "", 0, false
+	}
+	return credentials[1], *body.Score, true
 }
 
 func (h gameHandler) leaderboard(c *gin.Context) {
@@ -106,12 +130,13 @@ func (h gameHandler) writeError(c *gin.Context, err error) {
 		c.Header("WWW-Authenticate", "Bearer")
 	case errors.Is(err, game.ErrNotFound):
 		code = http.StatusNotFound
-	case errors.Is(err, game.ErrAlreadyFinished):
+	case errors.Is(err, game.ErrAlreadyFinished), errors.Is(err, game.ErrSessionFinished):
 		code = http.StatusConflict
-	case errors.Is(err, game.ErrExpired):
-		code = http.StatusGone
-	case errors.Is(err, game.ErrTooShort), errors.Is(err, game.ErrInvalidScore):
-		code = http.StatusUnprocessableEntity
+	case errors.Is(err, game.ErrRunRejected):
+		// The specific limit is logged but never returned, so clients cannot probe the policy.
+		h.logger.Info("run rejected", "reason", err)
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": game.ErrRunRejected.Error()})
+		return
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		code = http.StatusServiceUnavailable
 	}

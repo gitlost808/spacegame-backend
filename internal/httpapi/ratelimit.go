@@ -21,6 +21,7 @@ type RateRule struct {
 
 type RateConfig struct {
 	Start           RateRule `envPrefix:"RATE_LIMIT_START_"`
+	Checkpoint      RateRule `envPrefix:"RATE_LIMIT_CHECKPOINT_"`
 	Finish          RateRule `envPrefix:"RATE_LIMIT_FINISH_"`
 	Leaderboard     RateRule `envPrefix:"RATE_LIMIT_LEADERBOARD_"`
 	GlobalPerSecond int      `env:"RATE_LIMIT_GLOBAL_PER_SECOND"`
@@ -30,7 +31,7 @@ type RateConfig struct {
 
 func DefaultRateConfig() RateConfig {
 	return RateConfig{
-		Start: RateRule{30, 10}, Finish: RateRule{120, 20}, Leaderboard: RateRule{300, 30},
+		Start: RateRule{30, 10}, Checkpoint: RateRule{240, 30}, Finish: RateRule{120, 20}, Leaderboard: RateRule{300, 30},
 		GlobalPerSecond: 50, GlobalBurst: 100, MaxClients: 10000,
 	}
 }
@@ -47,7 +48,7 @@ func (c RateConfig) Validate() error {
 	if c.GlobalPerSecond < 1 || c.GlobalPerSecond > 1000000 || c.GlobalBurst < 1 || c.GlobalBurst > 1000000 || c.MaxClients < 1 || c.MaxClients > 1000000 {
 		return errors.New("global request rates, bursts, and client capacity must be between 1 and 1000000")
 	}
-	for _, rule := range []RateRule{c.Start, c.Finish, c.Leaderboard} {
+	for _, rule := range []RateRule{c.Start, c.Checkpoint, c.Finish, c.Leaderboard} {
 		if rule.PerMinute < 1 || rule.Burst < 1 || rule.PerMinute > 1000000 || rule.Burst > 1000000 {
 			return errors.New("request rates and bursts must be between 1 and 1000000")
 		}
@@ -132,7 +133,7 @@ func (l *RateLimiter) allow(key, action string) time.Duration {
 			return time.Minute
 		}
 		client = &clientLimits{buckets: make(map[string]*rate.Limiter)}
-		for name, rule := range map[string]RateRule{"start": l.config.Start, "finish": l.config.Finish, "leaderboard": l.config.Leaderboard} {
+		for name, rule := range map[string]RateRule{"start": l.config.Start, "checkpoint": l.config.Checkpoint, "finish": l.config.Finish, "leaderboard": l.config.Leaderboard} {
 			client.buckets[name] = rate.NewLimiter(rate.Limit(rule.PerMinute)/60, rule.Burst)
 		}
 		l.clients[key] = client
