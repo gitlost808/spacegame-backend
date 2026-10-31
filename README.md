@@ -1,7 +1,8 @@
 # Spacegame Backend
 
-A Go web service using [Gin](https://gin-gonic.com/) and PostgreSQL through
-[pgx](https://github.com/jackc/pgx). Requires Go 1.27 or later. Local database
+A leaderboard service for a space shooter browser game, using
+[Gin](https://gin-gonic.com/), PostgreSQL, [pgx](https://github.com/jackc/pgx), and
+[sqlc](https://sqlc.dev/) for generated query methods. Requires Go 1.27 or later. Local database
 development also requires Docker Compose. Database migrations use
 [Goose](https://github.com/pressly/goose), pinned in `go.mod`.
 
@@ -10,30 +11,38 @@ development also requires Docker Compose. Database migrations use
 ```sh
 cp .env.example .env
 make db-up
-
-set -a
-. ./.env
-set +a
-
 make migrate-up
 make run
 ```
 
-The Go process reads configuration from environment variables; it does not load
-`.env` automatically. The commands above export the example settings into your
-shell. Docker Compose reads `.env` itself.
+The server and migration command load `.env` automatically for local development
+using [godotenv](https://github.com/joho/godotenv). Existing process variables
+take precedence, including explicitly empty values. No shell export commands
+are needed. Docker Compose also reads `.env`. Docker must be running. If you
+already have a `.env`, keep it instead of copying over it, and edit its settings
+before starting the service.
 
-The server requires `DATABASE_URL` and verifies the connection before accepting
-HTTP requests. To use an existing PostgreSQL database, set `DATABASE_URL` to its
-connection string and skip `make db-up`.
+`.env` is optional and is loaded only when `APP_ENV` is unset, empty, or
+`development`. Set `APP_ENV=production` in your infrastructure configuration;
+production processes use only injected variables and mounted secrets.
+Configuration uses [caarlos0/env](https://github.com/caarlos0/env) for typed
+parsing; invalid settings fail startup.
+
+The server requires `DATABASE_URL` or `DATABASE_URL_FILE` and verifies the
+connection before accepting HTTP requests. To use an existing PostgreSQL
+database, set `DATABASE_URL` to its connection string and skip `make db-up`.
 
 The server listens on `:8080` by default. Set `HTTP_ADDR` to change the address:
 
 ```sh
-HTTP_ADDR=127.0.0.1:9090 go run ./cmd/server
+env HTTP_ADDR=127.0.0.1:8081 make run
 ```
 
-Check liveness and database readiness:
+Use a different port from `METRICS_ADDR`, which defaults to
+`127.0.0.1:9090`.
+
+In another terminal, check liveness and database readiness (use port 8081 if
+you chose the alternate address above):
 
 ```sh
 curl http://localhost:8080/healthz
@@ -42,13 +51,18 @@ curl http://localhost:8080/readyz
 # {"status":"ok"}
 ```
 
-`/healthz` checks that the HTTP service is alive. `/readyz` checks PostgreSQL with
-a two-second timeout and returns HTTP 503 if it is unavailable.
+`/healthz` checks that the HTTP service is alive. `/readyz` checks PostgreSQL,
+all migrations bundled with this build, and required game columns with a
+two-second timeout. It returns HTTP 503 when any of those checks fail.
 
 Logs are JSON written to standard output. Gin uses release mode by default;
 set `GIN_MODE=debug` for its extra development output. On Ctrl+C or SIGTERM, the
 server allows up to 10 seconds for active requests to finish, then closes the
 database pool.
+
+Prometheus metrics use a separate listener, defaulting to `127.0.0.1:9090`.
+Set `METRICS_ADDR` for your private monitoring network. JSON request logs include
+a request ID, route template, status, and duration.
 
 The local database uses the development credentials in `compose.yaml` and binds
 to `127.0.0.1:5432`. `make db-down` stops it and preserves its named volume.
@@ -71,13 +85,128 @@ make migrate-down  # Roll back the most recent migration
 ```
 
 Creating a migration does not need a database connection. All other commands
-require `DATABASE_URL`. No separate Goose installation is needed: the
+require `DATABASE_URL` or `DATABASE_URL_FILE`, supplied through `.env` locally
+or the process environment. No separate Goose installation is needed: the
 `cmd/migrate` command uses the pinned library and PostgreSQL driver.
 
-The directory initially has no SQL migrations until the first schema change is
-defined. `migrate-up` and `migrate-status` verify the connection and report that
-there are no SQL migrations. See [migrations/README.md](migrations/README.md)
-for authoring and deployment conventions.
+The initial migration creates the game session table and leaderboard index.
+After changing the schema or `internal/store/queries.sql`, run `make generate`
+and commit the generated files in `internal/store/`. The generator version is
+pinned in the Makefile; it runs through Docker and is not needed at runtime.
+See [migrations/README.md](migrations/README.md) for deployment conventions.
+
+## Game API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/v1/sessions` | Start a run and receive its private finish token |
+| POST | `/api/v1/sessions/{session_id}/checkpoint` | Report the run's current total score |
+| POST | `/api/v1/sessions/{session_id}/finish` | Validate and record the final score |
+| GET | `/api/v1/leaderboard?limit=20` | List the best completed runs, with ranks |
+
+Start a session when gameplay begins:
+
+```sh
+curl -X POST http://localhost:8080/api/v1/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"player_name":"Pilot"}'
+```
+
+The HTTP 201 response contains `session_id`, `session_token`, `player_name`,
+and `started_at`. Keep the token for this run. Names are trimmed
+and must contain 1–32 Unicode characters without control characters.
+Names also pass local checks for English/German profanity and extremist
+references before a session is created. Rejected names return HTTP 400 with
+`{"error":"please choose another player name"}`.
+Matching ignores case, accents, common leetspeak substitutions, and separator
+or zero-width obfuscation; accepted names keep their original spelling and emoji.
+The [filter policy and word lists](internal/namefilter/README.md) include narrow
+exceptions for innocent names and can be adjusted when rebuilding the service.
+The policy blocks extremist slogans and coded combinations, including
+`ADOLF HILTER 88 HEIL`; ordinary names or `88` alone are not blocked.
+Existing leaderboard entries are not changed by the filter.
+
+During gameplay, report the run's current total score at least every
+`SESSION_MAX_CHECKPOINT_GAP` (30 seconds by default). Sending one every 10
+seconds leaves room for slow networks. Replace `SESSION_ID` and `SESSION_TOKEN`
+with the values from the start response:
+
+```sh
+curl -X POST http://localhost:8080/api/v1/sessions/SESSION_ID/checkpoint \
+  -H 'Authorization: Bearer SESSION_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"score":500}'
+```
+
+An accepted checkpoint returns HTTP 204. Checkpoints on a finished run return
+HTTP 409. When gameplay ends, finish the run with the final score:
+
+```sh
+curl -X POST http://localhost:8080/api/v1/sessions/SESSION_ID/finish \
+  -H 'Authorization: Bearer SESSION_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"score":1000}'
+```
+
+The response contains the session ID, player name, score, start/finish times, and
+`duration_ms`. Duration is calculated from server-recorded times; the client
+submits only an integer score. Zero is valid. A valid finish is atomic and
+cannot be overwritten. Retrying the same score with the same token returns the
+original result, including after expiry. A different score returns HTTP 409.
+
+The leaderboard returns `{"entries":[...]}`. Each entry includes a `rank` and
+the completed result fields. It ranks individual runs, so the same display name
+can appear multiple times. Scores sort descending, with earlier finish time
+and then session ID breaking ties. The default limit is 20, with a maximum of
+100. An empty leaderboard returns `{"entries":[]}`. Display names are not
+authenticated accounts.
+
+Validation uses these configurable starter defaults:
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `SESSION_MIN_DURATION` | `1s` | Shortest accepted run; may be set to `0s` |
+| `SESSION_MAX_DURATION` | `1h` | Lifetime of a newly started session |
+| `MAX_SCORE_PER_SECOND` | `1000` | Highest accepted score rate between checkpoints |
+| `SESSION_MAX_CHECKPOINT_GAP` | `30s` | Longest allowed time between start, checkpoints, and finish |
+| `CORS_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to read the API |
+
+Tune these limits to the game's scoring rules. Each checkpoint and the final
+score must not decrease, and may grow by at most `MAX_SCORE_PER_SECOND` per
+second since the previous checkpoint (or the start). No gap between start,
+checkpoints, and finish may exceed `SESSION_MAX_CHECKPOINT_GAP`, so a session
+left idle cannot later claim a score. Runs must also last at least
+`SESSION_MIN_DURATION` and end before the session expires.
+
+Any failed check returns HTTP 422 with `{"error":"run rejected"}` and deletes
+the unfinished session. The response does not say which limit failed, so
+clients cannot probe the policy; the server logs the reason. Further attempts
+return 404, even if the score is corrected. Missing or wrong
+tokens do not delete sessions. Completed results remain protected, including
+when a valid finish races with an invalid attempt. Malformed HTTP/JSON requests
+are rejected without consuming the session.
+Missing/wrong tokens return 401, unknown sessions 404, rate limits return 429
+with `Retry-After`, and malformed requests 400. JSON request bodies are limited to 4 KiB. Tokens are generated with 256 bits
+of randomness and stored only as hashes. These checks filter implausible
+submissions; they do not prove that a client actually played a game.
+
+The example environment enables the frontend at `http://localhost:5173`.
+Set `CORS_ALLOWED_ORIGINS` to your game's exact origin when hosted separately;
+JSON and Authorization preflights are supported by
+[gin-contrib/cors](https://github.com/gin-contrib/cors). Without configured
+origins, the browser frontend must use the same origin as the API. Unlisted
+cross-origin requests and preflights return HTTP 403. `*` allows any origin
+without enabling cookie credentials.
+
+Per-client request limits default to starts 30/minute (burst 10), finishes
+120/minute (burst 20), and leaderboard reads 300/minute (burst 30). A global
+bucket allows 50 requests/second (burst 100) per instance. State is bounded at
+10,000 IPv4 addresses/IPv6 /64 prefixes. Tune the `RATE_LIMIT_*` settings in
+`.env.example` for your traffic.
+
+Expired unfinished sessions are deleted in batches every five minutes, after a
+default 24-hour retention period. Completed scores remain. Configure
+`CLEANUP_INTERVAL`, `EXPIRED_SESSION_RETENTION`, and `CLEANUP_BATCH_SIZE`.
 
 ## Docker
 
@@ -104,10 +233,26 @@ apply migrations on startup.
 To build an image directly, run `docker build -t spacegame-backend .`. When
 running it outside Compose, pass a `DATABASE_URL` reachable from the container.
 
+## Production
+
+This repository builds and publishes the application image. Production
+configuration and deployment live in the separate infrastructure repository,
+including ingress/TLS, secret mounts, rollout jobs, monitoring, and PostgreSQL
+backups and restore drills. `compose.yaml` is for local development.
+
+The [container contract](docs/container.md) documents commands, ports,
+environment variables, database privileges, health probes, and metrics for the
+infrastructure configuration. Set `APP_ENV=production` for both server and
+migration jobs and select an explicit `sslmode` in the PostgreSQL connection
+URI. Use `sslmode=verify-full` for remote databases; `sslmode=disable` is an
+explicit option for a trusted, isolated database on the same host. Both commands
+support `DATABASE_URL_FILE` for a mounted secret instead of `DATABASE_URL`.
+
 ## Published images
 
-The [Docker workflow](.github/workflows/docker.yml) builds the image and runs unit
-tests inside the Docker build. Pull requests build without publishing. Pushes
+The [Docker workflow](.github/workflows/docker.yml) checks generated query code
+and runs PostgreSQL integration tests before building the image. Unit tests also
+run inside the Docker build. Pull requests build without publishing. Pushes
 to the repository's default branch publish these tags to GitHub Container
 Registry:
 
@@ -131,8 +276,9 @@ each successful default-branch build.
 
 ```sh
 make fmt    # Format Go files
+make generate # Regenerate database access code with pinned sqlc
 make test   # Run tests
-make test-integration # Test PostgreSQL reads/writes with DATABASE_URL configured
+make test-integration # Test migrations, sessions, concurrency, and queries with PostgreSQL
 make vet    # Run static checks
 make build  # Build bin/server and bin/migrate
 make run    # Start the server
@@ -147,18 +293,26 @@ Without Make, run `go test ./...`, `go vet ./...`, and
 ```text
 cmd/server/        Server entry point, configuration, and shutdown
 cmd/migrate/       Goose migration command
+internal/config/   Typed server configuration and local dotenv loading
 internal/httpapi/  Gin routes, handlers, middleware, and tests
 internal/database/ PostgreSQL connection pool and integration test
+internal/game/     Session lifecycle, score validation, and leaderboard service
+internal/namefilter/ Local English/German player name filter and attributed word lists
+internal/store/    SQL queries and generated pgx access code
+internal/maintenance/ Bounded cleanup worker for expired unfinished sessions
+internal/observability/ Request metrics and structured logging
 migrations/        Versioned SQL schema changes and authoring instructions
+docs/container.md  Runtime contract for the separate infrastructure repository
 Dockerfile         Server and migration binaries in a non-root runtime image
 compose.yaml       Local app and PostgreSQL service with persistent storage
 ```
 
 Register new endpoints in `internal/httpapi/router.go`. Add application packages
 under `internal/` as the game grows. The database pool is created in the server
-entry point and can be passed into future persistence packages. Add versioned
-SQL migrations when introducing the first tables. The integration test uses
-a temporary table inside a rolled-back transaction.
+entry point and passed to the game service through generated query methods.
+Integration tests use temporary tables or isolated schemas and clean up their
+own data. Add versioned migrations and regenerate query methods when changing
+the game schema.
 
 The module name is `spacegame-backend`. When a repository remote is available,
 you can change it with `go mod edit -module=your/repository/path` and update
