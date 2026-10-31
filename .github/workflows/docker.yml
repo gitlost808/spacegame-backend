@@ -110,5 +110,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Don't let a throttled GitHub cache stall or fail the build (BuildKit waits 10m by default).
+          cache-from: type=gha,timeout=1m
+          cache-to: type=gha,mode=max,timeout=2m,ignore-error=true
